@@ -21,6 +21,7 @@ test_files/
 logs/
 build/
 dist/
+assets/
 
 # Temporary & Lock files
 ~$*

@@ -70,6 +70,14 @@ def build():
     for tc_file in ROOT.glob("tc*.py"):
         pyinstaller_cmd.append(f"--add-data={tc_file}{os.pathsep}.")
 
+    # Logo + app icon live in the assets/ folder
+    assets_dir = ROOT / "assets"
+    if assets_dir.exists():
+        pyinstaller_cmd.append(f"--add-data={assets_dir}{os.pathsep}assets")
+        icon = assets_dir / "app.ico"
+        if icon.exists():
+            pyinstaller_cmd.append(f"--icon={icon}")
+
     pyinstaller_cmd.append(str(ROOT / "app_gui.py"))
     subprocess.check_call(pyinstaller_cmd)
 
@@ -88,6 +96,11 @@ def build():
         src = ROOT / asset
         if src.exists():
             shutil.copy2(src, target_folder / asset)
+
+    if assets_dir.exists():
+        shutil.copytree(
+            assets_dir, target_folder / "assets", dirs_exist_ok=True
+        )
 
     test_files_src = ROOT / "test_files"
     if test_files_src.exists():
