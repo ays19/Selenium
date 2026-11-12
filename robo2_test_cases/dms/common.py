@@ -9,6 +9,7 @@ import shutil
 import time
 import traceback
 import uuid
+import random
 from collections import Counter
 from datetime import datetime
 
@@ -902,9 +903,20 @@ def select_checker(driver, preferred_checker=None):
 
 
 def fill_metadata_form(driver, wait, terms=None):
-    """Select the document type and fill visible required metadata fields with unique values."""
+    """Select the document type and fill visible required metadata fields with guaranteed unique values."""
     select_document_type(driver, wait, terms)
-    run_id = datetime.now().strftime("%H%M%S%f")[:8]
+    # Generate high-entropy 8-digit unique seed
+    unique_num = random.randint(10000000, 99999999)
+    run_id = f"{int(time.time()) % 100000}{random.randint(100, 999)}"
+
+    # Wait for dynamic AJAX metadata fields to load after selecting doc-type
+    try:
+        WebDriverWait(driver, 8).until(
+            lambda d: len(d.find_elements(By.CSS_SELECTOR, "#add_meta_data .meta-data-gen-wrap .form-group")) > 0
+        )
+    except Exception:
+        time.sleep(2)
+
     for attempt in range(3):
         try:
             panel = driver.find_element(*METADATA_PANEL)
@@ -922,26 +934,31 @@ def fill_metadata_form(driver, wait, terms=None):
                 if field.tag_name == "select":
                     if not is_required:
                         continue
+                    # Pick unique combinations for dropdowns
                     driver.execute_script("""
                         var sel = arguments[0];
-                        if (!sel.value) {
-                            var valid = [];
-                            for (var i = 0; i < sel.options.length; i++) {
-                                var val = sel.options[i].value;
-                                var txt = (sel.options[i].text || '').trim().toLowerCase();
-                                if (val && !sel.options[i].disabled && txt !== 'none' && txt !== 'nothing selected') {
-                                    valid.push(sel.options[i]);
-                                }
+                        var valid = [];
+                        for (var i = 0; i < sel.options.length; i++) {
+                            var val = sel.options[i].value;
+                            var txt = (sel.options[i].text || '').trim().toLowerCase();
+                            if (val && !sel.options[i].disabled && txt !== 'none' && txt !== 'nothing selected') {
+                                valid.push(sel.options[i]);
                             }
-                            if (sel.multiple && sel.getAttribute('data-parsley-unique_meta') === 'unique' && valid.length >= 4) {
+                        }
+                        if (valid.length > 0) {
+                            if (sel.multiple) {
+                                // Deselect all first
+                                for (var k = 0; k < sel.options.length; k++) { sel.options[k].selected = false; }
+                                // Pick a random non-overlapping subset
                                 var shuffled = valid.slice().sort(function() { return Math.random() - 0.5; });
-                                var count = Math.min(valid.length, 4 + Math.floor(Math.random() * 3));
+                                var count = Math.min(valid.length, 2 + Math.floor(Math.random() * (valid.length - 2)));
                                 for (var j = 0; j < count; j++) {
                                     shuffled[j].selected = true;
                                 }
-                            } else if (valid.length > 0) {
-                                valid[0].selected = true;
-                                sel.value = valid[0].value;
+                            } else {
+                                var chosen = valid[Math.floor(Math.random() * valid.length)];
+                                chosen.selected = true;
+                                sel.value = chosen.value;
                             }
                             if (window.$) {
                                 $(sel).trigger('change');
@@ -962,8 +979,11 @@ def fill_metadata_form(driver, wait, terms=None):
                     if is_required:
                         field.send_keys(datetime.now().strftime("%Y-%m-%d"))
                 elif field_type == "number" or any(w in outer_html for w in ("digits", "number", "integer", "numeric")):
-                    field.send_keys(str(int(run_id[-5:]) + i + 1))
+                    # Use unique 8-digit random integer to prevent collisions with earlier tests
+                    field.clear()
+                    field.send_keys(str(unique_num + i))
                 else:
+                    field.clear()
                     field.send_keys(f"AUTO_{run_id}_{i}")
             return
         except StaleElementReferenceException:
