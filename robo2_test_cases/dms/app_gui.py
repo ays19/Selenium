@@ -510,9 +510,8 @@ class AutomationRunnerGUI(tk.Tk):
             except Exception:
                 pass
 
-    # --------------------------------------------------------------------------
     # Styles
-    # --------------------------------------------------------------------------
+
     def _setup_styles(self):
         self.style = ttk.Style(self)
         self.style.theme_use("clam")
@@ -654,9 +653,8 @@ class AutomationRunnerGUI(tk.Tk):
             thickness=10,
         )
 
-    # --------------------------------------------------------------------------
     # Layout
-    # --------------------------------------------------------------------------
+    
     def _load_logo(self):
         """Pick the pre-sized logo closest to the screen scale (no Pillow needed)."""
         target = 40 * self.scale
@@ -1013,9 +1011,9 @@ class AutomationRunnerGUI(tk.Tk):
         self.charts_canvas.bind("<Configure>", lambda e: self._refresh_charts())
         self.notebook.bind("<<NotebookTabChanged>>", lambda e: self._refresh_charts())
 
-    # --------------------------------------------------------------------------
+
     # Chart Drawing Engine (Table + Pie Chart + Timing Line Graph)
-    # --------------------------------------------------------------------------
+    
     def _refresh_charts(self):
         if not hasattr(self, "charts_canvas"):
             return
@@ -1429,9 +1427,8 @@ class AutomationRunnerGUI(tk.Tk):
 
         return y + height
 
-    # --------------------------------------------------------------------------
     # Test list handling
-    # --------------------------------------------------------------------------
+
     def _load_module(self, module_name):
         self.tests = MODULES.get(module_name, {}).get("tests", [])
         self.selected = {script: True for _, script, _ in self.tests}
@@ -1529,9 +1526,8 @@ class AutomationRunnerGUI(tk.Tk):
     def _on_module_changed(self, event=None):
         self._load_module(self.module_var.get())
 
-    # --------------------------------------------------------------------------
     # Small helpers
-    # --------------------------------------------------------------------------
+
     def _browse_excel(self):
         f = filedialog.askopenfilename(
             title="Select Test Case Excel File",
@@ -1567,9 +1563,8 @@ class AutomationRunnerGUI(tk.Tk):
                 self.log_text.get("1.0", tk.END), encoding="utf-8"
             )
 
-    # --------------------------------------------------------------------------
     # Thread-safe UI updates (worker thread -> queue -> UI thread)
-    # --------------------------------------------------------------------------
+    
     def _ui(self, func, *args):
         """Call this from the worker thread to update the UI safely."""
         self.ui_queue.put((func, args))
@@ -1612,9 +1607,8 @@ class AutomationRunnerGUI(tk.Tk):
             text=f"Total: {total}  |  Passed: {passed}  |  Failed: {failed}"
         )
 
-    # --------------------------------------------------------------------------
     # Run / Stop
-    # --------------------------------------------------------------------------
+
     def _start_run(self):
         if self.is_running:
             return
