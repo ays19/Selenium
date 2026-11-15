@@ -199,7 +199,7 @@ A clean, standalone web scraper and end-to-end automation tool built for [SauceD
 
 ## 🛠 Tech Stack & Dependencies
 
-| Technology | Version / Requirement | Role in Project |
+| Technology Used | Version / Requirement | Role in Project |
 |---|---|---|
 | **Python** | `3.10+` (tested on `3.15`) | Core programming language |
 | **Selenium WebDriver** | `4.x` (e.g., `4.51.0`) | Browser automation, user interactions, explicit synchronization |
