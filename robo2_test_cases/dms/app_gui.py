@@ -6,7 +6,6 @@ High-DPI crystal-clear display, Live Execution Charts, and standalone PyInstalle
 
 from datetime import datetime
 import importlib
-import importlib.util
 import inspect
 import math
 import os
@@ -49,6 +48,15 @@ for p in [str(BUNDLE_DIR), str(APP_DIR)]:
     if p in sys.path:
         sys.path.remove(p)
     sys.path.insert(0, p)
+
+# Load .env from APP_DIR (if present) without overriding existing environment variables
+try:
+    from dotenv import load_dotenv as _load_dotenv
+
+    if (APP_DIR / ".env").exists():
+        _load_dotenv(APP_DIR / ".env", override=False)
+except Exception:
+    pass
 
 
 def find_script_path(script_name: str) -> Path | None:
@@ -107,6 +115,12 @@ def run_as_worker():
             src_code = script_path.read_text(encoding="utf-8", errors="ignore")
             has_main_guard = "__main__" in src_code
 
+            # Set clean sys.argv for the target script (pass 'all' for core/main.py)
+            if script_path.name == "main.py":
+                sys.argv = [str(script_path), "all"]
+            else:
+                sys.argv = [str(script_path)]
+
             start_t = time.time()
             # Execute file with __name__ == "__main__"
             mod_globals = runpy.run_path(str(script_path), run_name="__main__")
@@ -154,7 +168,7 @@ def run_as_worker():
                         # Function requires a logged-in Selenium driver from core
                         driver = None
                         try:
-                            import helpers
+                            helpers = importlib.import_module("helpers")
 
                             for fn_name in [
                                 "get_driver",
@@ -176,7 +190,9 @@ def run_as_worker():
 
                         try:
                             if stem != "authentication":
-                                import authentication
+                                authentication = importlib.import_module(
+                                    "authentication"
+                                )
 
                                 for auth_fn_name in [
                                     "login",
@@ -685,9 +701,8 @@ class AutomationRunnerGUI(tk.Tk):
             except Exception:
                 pass
 
-    # --------------------------------------------------------------------------
     # Styles
-    # --------------------------------------------------------------------------
+
     def _setup_styles(self):
         self.style = ttk.Style(self)
         self.style.theme_use("clam")
@@ -829,9 +844,8 @@ class AutomationRunnerGUI(tk.Tk):
             thickness=10,
         )
 
-    # --------------------------------------------------------------------------
     # Layout
-    # --------------------------------------------------------------------------
+    
     def _load_logo(self):
         """Pick the pre-sized logo closest to the screen scale (no Pillow needed)."""
         target = 40 * self.scale
@@ -1190,9 +1204,8 @@ class AutomationRunnerGUI(tk.Tk):
         self.charts_canvas.bind("<Configure>", lambda e: self._refresh_charts())
         self.notebook.bind("<<NotebookTabChanged>>", lambda e: self._refresh_charts())
 
-    # --------------------------------------------------------------------------
     # Chart Drawing Engine (Table + Pie Chart + Timing Line Graph)
-    # --------------------------------------------------------------------------
+    
     def _refresh_charts(self):
         if not hasattr(self, "charts_canvas"):
             return
@@ -1605,9 +1618,8 @@ class AutomationRunnerGUI(tk.Tk):
 
         return y + height
 
-    # --------------------------------------------------------------------------
     # Test list handling (Supports "ALL" or individual modules)
-    # --------------------------------------------------------------------------
+
     def _get_tests_for_selection(self, module_name: str):
         """Returns list of (test_id, script, desc, home_module, sheet_name)."""
         if module_name == "ALL":
@@ -1727,9 +1739,8 @@ class AutomationRunnerGUI(tk.Tk):
     def _on_module_changed(self, event=None):
         self._load_module(self.module_var.get())
 
-    # --------------------------------------------------------------------------
     # Small helpers
-    # --------------------------------------------------------------------------
+
     def _browse_excel(self):
         f = filedialog.askopenfilename(
             title="Select Test Case Excel File",
@@ -1765,9 +1776,8 @@ class AutomationRunnerGUI(tk.Tk):
                 self.log_text.get("1.0", tk.END), encoding="utf-8"
             )
 
-    # --------------------------------------------------------------------------
     # Thread-safe UI updates (worker thread -> queue -> UI thread)
-    # --------------------------------------------------------------------------
+
     def _ui(self, func, *args):
         """Call this from the worker thread to update the UI safely."""
         self.ui_queue.put((func, args))
@@ -1810,9 +1820,8 @@ class AutomationRunnerGUI(tk.Tk):
             text=f"Total: {total}  |  Passed: {passed}  |  Failed: {failed}"
         )
 
-    # --------------------------------------------------------------------------
     # Run / Stop
-    # --------------------------------------------------------------------------
+
     def _start_run(self):
         if self.is_running:
             return
@@ -2145,6 +2154,8 @@ class AutomationRunnerGUI(tk.Tk):
             cmd = [sys.executable, "--worker-test", rel_script_name, sheet_name]
         else:
             cmd = [sys.executable, str(script_path)]
+            if script_path.name == "main.py":
+                cmd.append("all")
 
         # Run inside script's parent folder (e.g., core/) so relative imports & .env work
         work_dir = (
@@ -2168,15 +2179,26 @@ class AutomationRunnerGUI(tk.Tk):
             )
             self.current_process = proc
 
-            for line in proc.stdout:
-                clean_line = line.rstrip()
-                if clean_line:
-                    self._log(f"   {clean_line}")
+            saw_failure = False
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    clean_line = line.rstrip()
+                    if clean_line:
+                        self._log(f"   {clean_line}")
+                        if (
+                            clean_line.startswith("FAILED :")
+                            or clean_line.startswith("Something went wrong:")
+                            or clean_line.startswith("Suite crashed:")
+                            or clean_line.startswith("Run aborted:")
+                        ):
+                            saw_failure = True
 
             proc.wait()
-            if proc.returncode == 0:
+            if self.stop_requested:
+                return "stopped"
+            if proc.returncode == 0 and not saw_failure:
                 return "pass"
-            return "stopped" if self.stop_requested else "fail"
+            return "fail"
         except Exception as e:
             self._log(f"   Exception during execution: {e}")
             return "fail"
