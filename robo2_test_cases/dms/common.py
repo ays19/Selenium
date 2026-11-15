@@ -4,6 +4,7 @@ open a document, click by label, popups, messages, second user, run a test case)
 Keep this file in the same folder as the test scripts.
 """
 import os
+from pathlib import Path
 import re
 import shutil
 import time
@@ -24,9 +25,10 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+# override=False ensures GUI-passed EXCEL_PATH and SHEET_NAME are never overwritten by .env
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), override=False)
 
-# config (from .env)
+# config (from .env or GUI environment)
 BASE_URL = os.getenv("BASE_URL")
 USERNAME = os.getenv("DMS_USERNAME")
 PASSWORD = os.getenv("DMS_PASSWORD")
@@ -36,12 +38,15 @@ EXCEL_PATH = os.getenv("EXCEL_PATH")
 SAMPLE_DIR = os.getenv("SAMPLE_DIR", "test_files")
 TESTER_NAME = os.getenv("TESTER_NAME")
 SHEET_NAME = os.getenv("SHEET_NAME", "DMS")
-SCREENSHOT_DIR = os.getenv("SCREENSHOT_DIR", "screenshots")
+SCREENSHOT_DIR = os.path.abspath(os.getenv("SCREENSHOT_DIR", "screenshots"))
 DOWNLOAD_DIR = os.path.abspath(os.getenv("DOWNLOAD_DIR", "downloads"))
 DEBUG_DIR = os.path.abspath(os.getenv("DEBUG_DIR", "debug"))
 EVIDENCE_LINK = os.getenv("EVIDENCE_LINK")
 EVIDENCE_HEADER = os.getenv("EVIDENCE_HEADER", "remark").lower()
 HEADER_ROW = 4
+
+# Track screenshots saved during the current process for automatic linking
+_LAST_SAVED_SHOTS = {}
 
 EXTENSIONS = [
     "pdf", "png", "jpg", "jpeg", "svg", "gif", "mp3", "mp4", "doc", "docx",
@@ -53,17 +58,17 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(DEBUG_DIR, exist_ok=True)
 
 # URLs
-EXPLORER_URL = BASE_URL + "/dms/document/explorer/"
-ROOT_URL = BASE_URL + "/dms/document/root"
-DELETED_ROOT_URL = BASE_URL + "/dms/document/deleted-root"
-RESTORE_URL = BASE_URL + "/dms/restore/"
-CHECKOUT_URL = BASE_URL + "/dms/document/checkout/"
-BULK_URL = BASE_URL + "/dms/document/upload/bulk-upload/"
-REVIEW_URL = BASE_URL + "/dms/document/pending-for-review/"
-MASTER_TABLE_URL = BASE_URL + "/dms/document/settings/master-table-method/"
-ATTACH_URL = BASE_URL + "/dms/document/upload/standard_upload/"
-PENDING_URL = BASE_URL + "/dms/document/upload/standard_upload/filesave/pendingmetalist/"
-REQUESTED_DOWNLOAD_URL = BASE_URL + "/requested_downloads/view/"
+EXPLORER_URL = (BASE_URL or "") + "/dms/document/explorer/"
+ROOT_URL = (BASE_URL or "") + "/dms/document/root"
+DELETED_ROOT_URL = (BASE_URL or "") + "/dms/document/deleted-root"
+RESTORE_URL = (BASE_URL or "") + "/dms/restore/"
+CHECKOUT_URL = (BASE_URL or "") + "/dms/document/checkout/"
+BULK_URL = (BASE_URL or "") + "/dms/document/upload/bulk-upload/"
+REVIEW_URL = (BASE_URL or "") + "/dms/document/pending-for-review/"
+MASTER_TABLE_URL = (BASE_URL or "") + "/dms/document/settings/master-table-method/"
+ATTACH_URL = (BASE_URL or "") + "/dms/document/upload/standard_upload/"
+PENDING_URL = (BASE_URL or "") + "/dms/document/upload/standard_upload/filesave/pendingmetalist/"
+REQUESTED_DOWNLOAD_URL = (BASE_URL or "") + "/requested_downloads/view/"
 
 # locators
 LOGIN_USER = (By.XPATH, "//input[contains(@placeholder, 'Username')]")
@@ -113,7 +118,7 @@ FIELD_XPATH = (
 
 
 class SetupError(Exception):
-    """Raised when test data could not be prepared; nothing is written to Excel."""
+    """Raised when test data could not be prepared."""
 
 
 # login & session
@@ -205,7 +210,14 @@ def find_sample_file(ext):
 
 
 def save_shot(driver, test_case_id, ext, result):
-    driver.save_screenshot(os.path.join(SCREENSHOT_DIR, f"{test_case_id}_{ext}_{result}.png"))
+    """Save screenshot inside screenshots/<test_case_id>/ and return its full file path."""
+    tc_folder = os.path.abspath(os.path.join(SCREENSHOT_DIR, str(test_case_id).strip()))
+    os.makedirs(tc_folder, exist_ok=True)
+    file_path = os.path.abspath(os.path.join(tc_folder, f"{test_case_id}_{ext}_{result}.png"))
+    driver.save_screenshot(file_path)
+    _LAST_SAVED_SHOTS.setdefault(test_case_id, []).append(file_path)
+    print(f"   [Screenshot saved]: {file_path}")
+    return file_path
 
 
 def fail(driver, test_case_id, slug, message):
@@ -222,72 +234,130 @@ def fail(driver, test_case_id, slug, message):
 def find_row_and_columns(ws, test_case_id):
     """Find the test case row (column A) and the result columns by header name."""
     headers = {}
-    for col in range(1, ws.max_column + 1):
-        text = str(ws.cell(HEADER_ROW, col).value or "").strip().lower()
-        if text:
-            headers[col] = text
+    for h_row in (HEADER_ROW, 1, 2, 3, 5):
+        for col in range(1, ws.max_column + 1):
+            text = str(ws.cell(h_row, col).value or "").strip().lower()
+            if text:
+                headers[col] = text
+        if any("status" in t or "actual" in t for t in headers.values()):
+            break
+        headers.clear()
 
-    def col_of(keyword):
-        for col, text in headers.items():
-            if keyword in text:
-                return col
+    def col_of(*keywords):
+        for kw in keywords:
+            for col, text in headers.items():
+                if kw in text:
+                    return col
         return None
 
     columns = {
         "actual": col_of("actual"),
         "status": col_of("status"),
-        "evidence": col_of(EVIDENCE_HEADER),
+        "evidence": col_of(EVIDENCE_HEADER, "remark", "evidence", "screenshot", "screen shot"),
         "date": col_of("date"),
         "tester": col_of("tester"),
     }
 
+    target_id = str(test_case_id).strip().lower()
     row = None
-    for r in range(HEADER_ROW + 1, ws.max_row + 1):
-        if str(ws.cell(r, 1).value or "").strip() == test_case_id:
+    for r in range(1, ws.max_row + 1):
+        cell_val = str(ws.cell(r, 1).value or "").strip().lower()
+        if cell_val == target_id:
             row = r
             break
     return row, columns
 
 
+def _get_active_excel_and_sheet():
+    """Always read latest EXCEL_PATH and SHEET_NAME from os.environ if updated at runtime."""
+    excel_p = os.environ.get("EXCEL_PATH") or EXCEL_PATH
+    sheet_n = os.environ.get("SHEET_NAME") or SHEET_NAME
+    return excel_p, sheet_n
+
+
 def check_excel_ready(test_case_id):
     """Ensure the test case row exists in Excel and the workbook is not locked."""
-    ws = openpyxl.load_workbook(EXCEL_PATH)[SHEET_NAME]
+    excel_p, sheet_n = _get_active_excel_and_sheet()
+    print(f"Checking Excel: {excel_p} [Sheet: {sheet_n}] for {test_case_id}")
+    wb = openpyxl.load_workbook(excel_p)
+    ws = wb[sheet_n] if sheet_n in wb.sheetnames else wb.active
     row, columns = find_row_and_columns(ws, test_case_id)
     if row is None:
-        raise SystemExit(f"{test_case_id} not found in column A of sheet '{SHEET_NAME}'")
+        raise SystemExit(f"{test_case_id} not found in column A of sheet '{ws.title}' in {excel_p}")
     missing = [k for k, v in columns.items() if v is None]
-    print(f"Row {row} found. Columns not found in header row {HEADER_ROW}: {missing or 'none'}")
+    print(f"Row {row} found in '{ws.title}'. Columns not found: {missing or 'none'}")
     try:
-        open(EXCEL_PATH, "ab").close()
+        open(excel_p, "ab").close()
     except PermissionError:
         raise SystemExit("Close the Excel file first, then run again.")
 
 
-def write_result(test_case_id, actual, status):
-    wb = openpyxl.load_workbook(EXCEL_PATH)
-    ws = wb[SHEET_NAME]
+def _resolve_screenshot_file(test_case_id, shot_paths=None):
+    """Find the exact .png screenshot file for test_case_id."""
+    candidates = list(shot_paths or []) or list(_LAST_SAVED_SHOTS.get(test_case_id, []))
+    candidates = [os.path.abspath(p) for p in candidates if p and os.path.isfile(p)]
+
+    if not candidates:
+        tc_folder = os.path.abspath(os.path.join(SCREENSHOT_DIR, str(test_case_id).strip()))
+        if os.path.isdir(tc_folder):
+            pngs = [
+                os.path.join(tc_folder, f)
+                for f in os.listdir(tc_folder)
+                if f.lower().endswith(".png")
+            ]
+            if pngs:
+                pngs.sort(key=lambda p: os.path.getmtime(p))
+                candidates = pngs
+
+    if not candidates:
+        return None
+
+    fail_shots = [p for p in candidates if "_FAIL.png" in p]
+    return fail_shots[-1] if fail_shots else candidates[-1]
+
+
+def write_result(test_case_id, actual, status, shot_paths=None):
+    excel_p, sheet_n = _get_active_excel_and_sheet()
+    wb = openpyxl.load_workbook(excel_p)
+    ws = wb[sheet_n] if sheet_n in wb.sheetnames else wb.active
     row, columns = find_row_and_columns(ws, test_case_id)
+    if row is None:
+        print(f"[!] Warning: Row for {test_case_id} not found in sheet '{ws.title}'")
+        return
+
+    shot_file = _resolve_screenshot_file(test_case_id, shot_paths)
+    if shot_file:
+        target_link = os.path.abspath(shot_file)
+        display_text = os.path.basename(shot_file)
+    else:
+        target_link = EVIDENCE_LINK
+        display_text = "Evidence Doc"
+
     values = {
         "actual": actual,
         "status": status,
-        "evidence": "Evidence Doc",
+        "evidence": display_text,
         "date": datetime.now().strftime("%d-%b-%Y"),
         "tester": TESTER_NAME,
     }
     for key, col in columns.items():
         if col:
             ws.cell(row, col).value = values[key]
-    if columns["evidence"] and EVIDENCE_LINK:
+
+    if columns["evidence"] and target_link:
         cell = ws.cell(row, columns["evidence"])
-        cell.hyperlink = EVIDENCE_LINK
+        cell.value = display_text
+        cell.hyperlink = target_link
         cell.style = "Hyperlink"
-    wb.save(EXCEL_PATH)
-    print(f"Saved to: {os.path.abspath(EXCEL_PATH)}  (sheet '{ws.title}')")
-    check = openpyxl.load_workbook(EXCEL_PATH)[SHEET_NAME]
+
+    wb.save(excel_p)
+    print(f"Saved to: {os.path.abspath(excel_p)}  (sheet '{ws.title}', row {row})")
+    check = openpyxl.load_workbook(excel_p)[ws.title]
     for key, col in columns.items():
         if col:
             cell = check.cell(row, col)
-            print(f"  {cell.coordinate} [{check.cell(HEADER_ROW, col).value}] = {cell.value!r}")
+            link_info = f" -> {cell.hyperlink.target}" if cell.hyperlink else ""
+            print(f"  {cell.coordinate} = {cell.value!r}{link_info}")
 
 
 # text & error helpers
@@ -708,6 +778,7 @@ def best_option_index(options, term):
             return i
     return 0
 
+
 def pick_select2(driver, wait, term, nth=0):
     """Open the nth visible Select2 dropdown, type `term`, and pick the first result."""
     boxes = visible(driver, "span.select2-selection")
@@ -905,11 +976,9 @@ def select_checker(driver, preferred_checker=None):
 def fill_metadata_form(driver, wait, terms=None):
     """Select the document type and fill visible required metadata fields with guaranteed unique values."""
     select_document_type(driver, wait, terms)
-    # Generate high-entropy 8-digit unique seed
     unique_num = random.randint(10000000, 99999999)
     run_id = f"{int(time.time()) % 100000}{random.randint(100, 999)}"
 
-    # Wait for dynamic AJAX metadata fields to load after selecting doc-type
     try:
         WebDriverWait(driver, 8).until(
             lambda d: len(d.find_elements(By.CSS_SELECTOR, "#add_meta_data .meta-data-gen-wrap .form-group")) > 0
@@ -934,7 +1003,6 @@ def fill_metadata_form(driver, wait, terms=None):
                 if field.tag_name == "select":
                     if not is_required:
                         continue
-                    # Pick unique combinations for dropdowns
                     driver.execute_script("""
                         var sel = arguments[0];
                         var valid = [];
@@ -947,9 +1015,7 @@ def fill_metadata_form(driver, wait, terms=None):
                         }
                         if (valid.length > 0) {
                             if (sel.multiple) {
-                                // Deselect all first
                                 for (var k = 0; k < sel.options.length; k++) { sel.options[k].selected = false; }
-                                // Pick a random non-overlapping subset
                                 var shuffled = valid.slice().sort(function() { return Math.random() - 0.5; });
                                 var count = Math.min(valid.length, 2 + Math.floor(Math.random() * (valid.length - 2)));
                                 for (var j = 0; j < count; j++) {
@@ -979,7 +1045,6 @@ def fill_metadata_form(driver, wait, terms=None):
                     if is_required:
                         field.send_keys(datetime.now().strftime("%Y-%m-%d"))
                 elif field_type == "number" or any(w in outer_html for w in ("digits", "number", "integer", "numeric")):
-                    # Use unique 8-digit random integer to prevent collisions with earlier tests
                     field.clear()
                     field.send_keys(str(unique_num + i))
                 else:
@@ -1019,13 +1084,12 @@ def pending_page_info(driver):
 
 
 def pending_next_page(driver):
-    """Go to the next page of the Pending Files list. Returns False when there is no next page.
-    The Next button is disabled while a page is still loading, so wait for it instead of giving up."""
+    """Go to the next page of the Pending Files list. Returns False when there is no next page."""
     for _ in range(10):
         shown, total = pending_page_info(driver)
         last = shown.split("-")[-1].strip()
         if total is not None and last.isdigit() and int(last) >= total:
-            return False  # already on the last page
+            return False
         more = [b for b in visible(driver, "#pagination button.next") if b.is_enabled()]
         if more:
             click(driver, more[0])
@@ -1036,8 +1100,8 @@ def pending_next_page(driver):
             time.sleep(0.5)
             return True
         if not shown:
-            return False  # no paging info on the page and no Next button
-        time.sleep(1.5)  # Next is disabled while the list is loading
+            return False
+        time.sleep(1.5)
     return False
 
 
@@ -1277,7 +1341,7 @@ def search_finds(driver, wait, name, tries=1):
             )
             return True
         except TimeoutException:
-            pass  # not indexed yet, reload and try again
+            pass
     return False
 
 
@@ -1335,8 +1399,7 @@ def fill_search_meta(driver, label_text, value):
     except TimeoutException:
         names = [clean(l.text) for l in driver.find_elements(By.CSS_SELECTOR, "#dms_search_form .meta-data-wrap .fg-line")]
         raise SetupError(f"search form has no metadata field '{label_text}'. Fields on page: {names}")
-    # choosing the doc type re-renders the metadata fields by AJAX, which can replace the field while we type
-    # or wipe a value typed too early: look the field up again each time and type once more if the value is gone
+
     for _ in range(5):
         try:
             field = wait_field()
@@ -1359,7 +1422,7 @@ def wait_search_meta_rebuilt(driver, old_wrap_children, seconds=5):
     try:
         WebDriverWait(driver, seconds).until(EC.staleness_of(old_wrap_children[0]))
     except TimeoutException:
-        pass  # fields were not re-rendered (same doc type) - nothing to wait for
+        pass
     time.sleep(0.5)
 
 
@@ -1539,6 +1602,8 @@ def run(test_case_id, scenarios):
     check_excel_ready(test_case_id)
     driver, wait = start_browser()
     results = []
+    shot_paths = []
+    failed_shots = []
     setup_problem = None
 
     try:
@@ -1550,20 +1615,42 @@ def run(test_case_id, scenarios):
             except SetupError as error:
                 setup_problem = f"{label}: {error}"
                 fail(driver, test_case_id, slug, str(error))
+                shot_path = os.path.abspath(
+                    os.path.join(SCREENSHOT_DIR, str(test_case_id).strip(), f"{test_case_id}_{slug}_FAIL.png")
+                )
+                shot_paths.append(shot_path)
+                failed_shots.append(shot_path)
                 break
             except Exception as error:
                 ok, msg = False, short(error)
             if ok:
-                save_shot(driver, test_case_id, slug, "PASS")
+                shot_path = save_shot(driver, test_case_id, slug, "PASS")
+                shot_paths.append(shot_path)
             else:
                 ok, msg = fail(driver, test_case_id, slug, msg)
+                shot_path = os.path.abspath(
+                    os.path.join(SCREENSHOT_DIR, str(test_case_id).strip(), f"{test_case_id}_{slug}_FAIL.png")
+                )
+                shot_paths.append(shot_path)
+                failed_shots.append(shot_path)
             print(f"{label:28} -> {'PASS' if ok else 'FAIL'} ({msg})")
             results.append((label, ok, msg))
+    except Exception as login_err:
+        setup_problem = f"Login/Setup failed: {short(login_err)}"
+        fail(driver, test_case_id, "login", str(login_err))
+        shot_path = os.path.abspath(
+            os.path.join(SCREENSHOT_DIR, str(test_case_id).strip(), f"{test_case_id}_login_FAIL.png")
+        )
+        shot_paths.append(shot_path)
+        failed_shots.append(shot_path)
     finally:
         driver.quit()
 
     if setup_problem:
-        raise SystemExit(f"Could not prepare the test data, nothing was written to Excel. {setup_problem}")
+        # Write the failure and screenshot to Excel even when SetupError happens!
+        chosen_shots = failed_shots if failed_shots else shot_paths
+        write_result(test_case_id, f"Setup Error - {setup_problem}", "Fail", shot_paths=chosen_shots)
+        raise SystemExit(f"Could not prepare the test data: {setup_problem}")
 
     status = "Pass" if all(ok for _, ok, _ in results) else "Fail"
     if len(results) == 1:
@@ -1571,7 +1658,8 @@ def run(test_case_id, scenarios):
     else:
         actual = ". ".join(f"{label}: {'OK' if ok else 'FAILED'} - {msg}" for label, ok, msg in results)
 
-    write_result(test_case_id, actual, status)
+    chosen_shots = failed_shots if failed_shots else shot_paths
+    write_result(test_case_id, actual, status, shot_paths=chosen_shots)
     print(f"\n{test_case_id}: {status}")
     if status == "Fail":
         raise SystemExit(1)

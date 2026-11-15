@@ -6,6 +6,7 @@ Run with: python build_exe.py
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -28,6 +29,38 @@ def kill_old_processes():
     time.sleep(1)
 
 
+def _remove_readonly(func, path, excinfo):
+    """Clear read-only bit and retry removal on Windows."""
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception:
+        pass
+
+
+def ensure_unlocked_dist(dist_dir: Path):
+    """Ensure the dist directory can be cleaned before PyInstaller runs."""
+    excel_in_dist = (
+        dist_dir
+        / "Robo2mation_Runner"
+        / "Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx"
+    )
+    if excel_in_dist.exists():
+        try:
+            with open(excel_in_dist, "ab"):
+                pass
+        except PermissionError:
+            print(
+                "\n[!] WARNING: 'Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx' is open in Excel!"
+            )
+            try:
+                input(
+                    "    -> Please save & close Excel now, then press ENTER to continue..."
+                )
+            except EOFError:
+                pass
+
+
 def build():
     kill_old_processes()
 
@@ -39,14 +72,18 @@ def build():
     dist_dir = ROOT / "dist"
     build_dir = ROOT / "build"
 
+    ensure_unlocked_dist(dist_dir)
+
     # Clean previous build directories safely
     for d in [dist_dir, build_dir]:
         if d.exists():
             try:
-                shutil.rmtree(d)
+                shutil.rmtree(d, onexc=_remove_readonly)
+            except TypeError:
+                shutil.rmtree(d, onerror=_remove_readonly)
             except Exception as e:
                 print(
-                    f"[!] Warning: Could not remove {d.name} automatically ({e}). Please close any open folders."
+                    f"[!] Warning: Could not remove {d.name} automatically ({e})."
                 )
 
     print("[*] Compiling Test Automation Suite into Executable...")
@@ -69,6 +106,11 @@ def build():
 
     for tc_file in ROOT.glob("tc*.py"):
         pyinstaller_cmd.append(f"--add-data={tc_file}{os.pathsep}.")
+
+    # Bundle the core/ folder if present
+    core_dir = ROOT / "core"
+    if core_dir.exists():
+        pyinstaller_cmd.append(f"--add-data={core_dir}{os.pathsep}core")
 
     # Logo + app icon live in the assets/ folder
     assets_dir = ROOT / "assets"
@@ -95,7 +137,16 @@ def build():
     for asset in [".env", "Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx"]:
         src = ROOT / asset
         if src.exists():
-            shutil.copy2(src, target_folder / asset)
+            try:
+                shutil.copy2(src, target_folder / asset)
+            except PermissionError:
+                print(f"[!] Skipped overwriting locked file: {asset}")
+
+    # Copy core/ folder alongside the executable so core/.env and scripts are editable
+    if core_dir.exists():
+        shutil.copytree(
+            core_dir, target_folder / "core", dirs_exist_ok=True
+        )
 
     if assets_dir.exists():
         shutil.copytree(

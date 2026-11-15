@@ -1,14 +1,18 @@
 """
 Robo2mation Test Automation Suite Desktop Client
-Supports Module Selection (DMS, Core, Workflow, Reports),
+Supports Module Selection (ALL, DMS, Core, Workflow, Reports),
 High-DPI crystal-clear display, Live Execution Charts, and standalone PyInstaller compilation.
 """
 
+from datetime import datetime
 import importlib
+import importlib.util
+import inspect
 import math
 import os
 from pathlib import Path
 import queue
+import runpy
 import subprocess
 import sys
 import threading
@@ -40,15 +44,17 @@ else:
     APP_DIR = Path(__file__).resolve().parent
     BUNDLE_DIR = APP_DIR
 
-# Ensure both BUNDLE_DIR (_internal) and APP_DIR are searchable by Python
+# Ensure APP_DIR is searched FIRST so updated common.py / tc*.py files override _internal
 for p in [str(BUNDLE_DIR), str(APP_DIR)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+    if p in sys.path:
+        sys.path.remove(p)
+    sys.path.insert(0, p)
 
 
 def find_script_path(script_name: str) -> Path | None:
-    """Finds a test script whether inside _internal or alongside the exe."""
-    for base in [BUNDLE_DIR, APP_DIR]:
+    """Finds a test script (including subfolder paths like 'core/user_management.py')
+    whether alongside the exe or inside _internal."""
+    for base in [APP_DIR, BUNDLE_DIR]:
         candidate = base / script_name
         if candidate.exists():
             return candidate
@@ -62,13 +68,156 @@ def run_as_worker():
     if len(sys.argv) >= 3 and sys.argv[1] == "--worker-test":
         test_module_name = sys.argv[2]
         sheet_name = sys.argv[3] if len(sys.argv) > 3 else "DMS"
+        gui_excel_path = os.environ.get("EXCEL_PATH")
         os.environ["SHEET_NAME"] = sheet_name
 
         try:
-            mod_stem = Path(test_module_name).stem
-            mod = importlib.import_module(mod_stem)
-            if hasattr(mod, "main"):
-                mod.main()
+            script_path = find_script_path(test_module_name)
+            if not script_path or not script_path.exists():
+                print(f"[!] FAIL: Could not locate script: {test_module_name}")
+                sys.exit(1)
+
+            script_dir = str(script_path.parent)
+            if script_dir not in sys.path:
+                sys.path.insert(0, script_dir)
+
+            # Ensure both _internal/core and dist/core are on sys.path
+            for base in [BUNDLE_DIR, APP_DIR]:
+                sub_dir = base / Path(test_module_name).parent
+                if sub_dir.exists() and str(sub_dir) not in sys.path:
+                    sys.path.insert(0, str(sub_dir))
+
+            os.chdir(script_dir)
+
+            # Load .env inside script directory without overwriting GUI's EXCEL_PATH/SHEET_NAME
+            env_file = Path(script_dir) / ".env"
+            if env_file.exists():
+                try:
+                    from dotenv import load_dotenv
+
+                    load_dotenv(env_file, override=False)
+                except Exception:
+                    pass
+
+            if gui_excel_path:
+                os.environ["EXCEL_PATH"] = gui_excel_path
+            os.environ["SHEET_NAME"] = sheet_name
+
+            # Check whether the script has a __main__ guard or direct common.run() call
+            src_code = script_path.read_text(encoding="utf-8", errors="ignore")
+            has_main_guard = "__main__" in src_code
+
+            start_t = time.time()
+            # Execute file with __name__ == "__main__"
+            mod_globals = runpy.run_path(str(script_path), run_name="__main__")
+
+            # If the script didn't have a __main__ guard and finished quickly without launching a browser,
+            # invoke its entry function (main / run / module function)
+            if not has_main_guard and (time.time() - start_t < 2.5):
+                stem = script_path.stem
+                target_fn = None
+
+                # 1. Check standard entry point names
+                for cand in ["main", "run", stem, f"run_{stem}", f"test_{stem}"]:
+                    if cand in mod_globals and callable(mod_globals[cand]):
+                        target_fn = mod_globals[cand]
+                        break
+
+                # 2. Otherwise find the last public function defined inside this file
+                if target_fn is None:
+                    local_fns = [
+                        obj
+                        for name, obj in mod_globals.items()
+                        if inspect.isfunction(obj)
+                        and obj.__module__ == "__main__"
+                        and not name.startswith("_")
+                    ]
+                    if local_fns:
+                        target_fn = local_fns[-1]
+
+                if target_fn is not None:
+                    sig = inspect.signature(target_fn)
+                    req_params = [
+                        p
+                        for p in sig.parameters.values()
+                        if p.default is inspect.Parameter.empty
+                        and p.kind
+                        in (
+                            inspect.Parameter.POSITIONAL_ONLY,
+                            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        )
+                    ]
+
+                    if len(req_params) == 0:
+                        target_fn()
+                    else:
+                        # Function requires a logged-in Selenium driver from core
+                        driver = None
+                        try:
+                            import helpers
+
+                            for fn_name in [
+                                "get_driver",
+                                "init_driver",
+                                "create_driver",
+                                "setup_driver",
+                            ]:
+                                if hasattr(helpers, fn_name):
+                                    driver = getattr(helpers, fn_name)()
+                                    break
+                        except Exception:
+                            pass
+
+                        if driver is None:
+                            from selenium import webdriver
+
+                            driver = webdriver.Chrome()
+                            driver.maximize_window()
+
+                        try:
+                            if stem != "authentication":
+                                import authentication
+
+                                for auth_fn_name in [
+                                    "login",
+                                    "authenticate",
+                                    "run",
+                                    "main",
+                                    "authentication",
+                                ]:
+                                    if hasattr(authentication, auth_fn_name):
+                                        auth_fn = getattr(
+                                            authentication, auth_fn_name
+                                        )
+                                        if (
+                                            len(
+                                                inspect.signature(
+                                                    auth_fn
+                                                ).parameters
+                                            )
+                                            >= 1
+                                        ):
+                                            auth_fn(driver)
+                                        else:
+                                            res = auth_fn()
+                                            if res is not None:
+                                                driver = res
+                                        break
+
+                            if len(req_params) == 1:
+                                target_fn(driver)
+                            else:
+                                from selenium.webdriver.support.ui import (
+                                    WebDriverWait,
+                                )
+
+                                target_fn(driver, WebDriverWait(driver, 20))
+                        finally:
+                            try:
+                                driver.quit()
+                            except Exception:
+                                pass
+
             sys.exit(0)
         except SystemExit as se:
             sys.exit(se.code if se.code is not None else 0)
@@ -434,7 +583,31 @@ MODULES = {
     },
     "Core": {
         "sheet_name": "Core",
-        "tests": [],
+        "tests": [
+            ("CORE-001", "core/authentication.py", "Authentication"),
+            ("CORE-002", "core/announcement.py", "Announcement"),
+            ("CORE-003", "core/branch_management.py", "Branch Management"),
+            ("CORE-004", "core/department_management.py", "Department Management"),
+            ("CORE-005", "core/group_management.py", "Group Management"),
+            ("CORE-006", "core/role_management.py", "Role Management"),
+            ("CORE-007", "core/user_management.py", "User Management"),
+            ("CORE-008", "core/profile_update.py", "Profile Update"),
+            ("CORE-009", "core/signature_management.py", "Signature Management"),
+            ("CORE-010", "core/sign_up_request.py", "Sign Up Request"),
+            ("CORE-011", "core/master_table_management.py", "Master Table Management"),
+            (
+                "CORE-012",
+                "core/master_table_element_management.py",
+                "Master Table Element Management",
+            ),
+            (
+                "CORE-013",
+                "core/master_table_record_management.py",
+                "Master Table Record Management",
+            ),
+            ("CORE-014", "core/test_mail.py", "Test Mail Configuration"),
+            ("CORE-ALL", "core/main.py", "Run Full Core Suite (main.py)"),
+        ],
     },
     "Workflow": {
         "sheet_name": "Workflow",
@@ -449,6 +622,8 @@ MODULES = {
         "tests": [],
     },
 }
+
+DROPDOWN_OPTIONS = ["ALL"] + list(MODULES.keys())
 
 
 # MAIN GUI APPLICATION
@@ -486,7 +661,7 @@ class AutomationRunnerGUI(tk.Tk):
         self.current_process = None
 
         # Data for the selected module and cross-module tracking for charts
-        self.tests = []  # [(test_id, script_name, description)]
+        self.tests = []  # [(test_id, script_name, description, mod_name, sheet_name)]
         self.selected = {}  # script_name -> True / False
         self.results = {}  # script_name -> (status, duration_text)
         self.module_results = {m: {} for m in MODULES}  # module_name -> {script: (status, duration_sec, test_id)}
@@ -510,8 +685,9 @@ class AutomationRunnerGUI(tk.Tk):
             except Exception:
                 pass
 
+    # --------------------------------------------------------------------------
     # Styles
-
+    # --------------------------------------------------------------------------
     def _setup_styles(self):
         self.style = ttk.Style(self)
         self.style.theme_use("clam")
@@ -653,8 +829,9 @@ class AutomationRunnerGUI(tk.Tk):
             thickness=10,
         )
 
+    # --------------------------------------------------------------------------
     # Layout
-    
+    # --------------------------------------------------------------------------
     def _load_logo(self):
         """Pick the pre-sized logo closest to the screen scale (no Pillow needed)."""
         target = 40 * self.scale
@@ -724,7 +901,7 @@ class AutomationRunnerGUI(tk.Tk):
         )
         bar.pack(fill=tk.X, padx=16, pady=(12, 6))
 
-        # Module dropdown
+        # Module dropdown (includes "ALL")
         ttk.Label(
             bar,
             text="Module / Sheet:",
@@ -735,7 +912,7 @@ class AutomationRunnerGUI(tk.Tk):
         self.module_dropdown = ttk.Combobox(
             bar,
             textvariable=self.module_var,
-            values=list(MODULES.keys()),
+            values=DROPDOWN_OPTIONS,
             state="readonly",
             width=14,
             font=("Segoe UI", 9),
@@ -745,16 +922,18 @@ class AutomationRunnerGUI(tk.Tk):
         )
         self.module_dropdown.bind("<<ComboboxSelected>>", self._on_module_changed)
 
-        # Excel file
+        # Excel file (Always default to the Excel file next to the app, not a stale .env path)
         ttk.Label(
             bar,
             text="Test Case Excel:",
             font=("Segoe UI", 9, "bold"),
             background=self.card_bg,
         ).grid(row=0, column=2, sticky=tk.W, padx=(0, 6), pady=4)
-        default_excel = os.getenv(
-            "EXCEL_PATH",
-            str(APP_DIR / "Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx"),
+        local_excel = APP_DIR / "Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx"
+        default_excel = (
+            str(local_excel)
+            if local_excel.exists()
+            else os.getenv("EXCEL_PATH", str(local_excel))
         )
         self.excel_var = tk.StringVar(value=default_excel)
         ttk.Entry(
@@ -1011,9 +1190,9 @@ class AutomationRunnerGUI(tk.Tk):
         self.charts_canvas.bind("<Configure>", lambda e: self._refresh_charts())
         self.notebook.bind("<<NotebookTabChanged>>", lambda e: self._refresh_charts())
 
-
+    # --------------------------------------------------------------------------
     # Chart Drawing Engine (Table + Pie Chart + Timing Line Graph)
-    
+    # --------------------------------------------------------------------------
     def _refresh_charts(self):
         if not hasattr(self, "charts_canvas"):
             return
@@ -1063,7 +1242,6 @@ class AutomationRunnerGUI(tk.Tk):
             ("Workflow", "Workflow"),
             ("DMS", "DMS"),
             ("Report", "Report"),
-            ("Configurable", "Configurable"),
         ]
 
         row_h = int(25 * s)
@@ -1189,7 +1367,7 @@ class AutomationRunnerGUI(tk.Tk):
             fill="#1D2A73",
         )
 
-        # Aggregate counts from current module (or all modules if current is empty)
+        # Aggregate counts from current view
         passed = sum(1 for st, _ in self.results.values() if st == "pass")
         failed = sum(1 for st, _ in self.results.values() if st == "fail")
         stopped = sum(1 for st, _ in self.results.values() if st == "stopped")
@@ -1370,7 +1548,7 @@ class AutomationRunnerGUI(tk.Tk):
                 fill="#E2E8F0",
                 dash=(4, 4),
             )
-            short_id = tid.replace("DMS-", "")
+            short_id = tid.replace("DMS-", "").replace("CORE-", "C-")
             c.create_text(
                 px,
                 plot_y1 + int(14 * s),
@@ -1427,17 +1605,40 @@ class AutomationRunnerGUI(tk.Tk):
 
         return y + height
 
-    # Test list handling
+    # --------------------------------------------------------------------------
+    # Test list handling (Supports "ALL" or individual modules)
+    # --------------------------------------------------------------------------
+    def _get_tests_for_selection(self, module_name: str):
+        """Returns list of (test_id, script, desc, home_module, sheet_name)."""
+        if module_name == "ALL":
+            combined = []
+            for mod_key, mod_data in MODULES.items():
+                sheet = mod_data.get("sheet_name", mod_key)
+                for tid, script, desc in mod_data.get("tests", []):
+                    if tid == "CORE-ALL":
+                        continue
+                    combined.append((tid, script, f"[{mod_key}] {desc}", mod_key, sheet))
+            return combined
+        else:
+            mod_data = MODULES.get(module_name, {})
+            sheet = mod_data.get("sheet_name", module_name)
+            return [
+                (tid, script, desc, module_name, sheet)
+                for tid, script, desc in mod_data.get("tests", [])
+            ]
 
     def _load_module(self, module_name):
-        self.tests = MODULES.get(module_name, {}).get("tests", [])
-        self.selected = {script: True for _, script, _ in self.tests}
-        # Restore any previous results for this module
-        saved = self.module_results.get(module_name, {})
-        self.results = {
-            script: (st, f"{dur:.1f}s" if dur > 0 else "")
-            for script, (st, dur, _) in saved.items()
-        }
+        self.tests = self._get_tests_for_selection(module_name)
+        self.selected = {script: True for _, script, _, _, _ in self.tests}
+
+        # Restore any previous results for the visible tests
+        self.results = {}
+        for _, script, _, home_mod, _ in self.tests:
+            saved = self.module_results.get(home_mod, {})
+            if script in saved:
+                st, dur, _ = saved[script]
+                self.results[script] = (st, f"{dur:.1f}s" if dur > 0 else "")
+
         self.search_var.set("")
         self._refresh_tree()
         self._refresh_charts()
@@ -1447,7 +1648,7 @@ class AutomationRunnerGUI(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         term = self.search_var.get().strip().lower()
 
-        for test_id, script, desc in self.tests:
+        for test_id, script, desc, _, _ in self.tests:
             if term and term not in test_id.lower() and term not in desc.lower():
                 continue
             status, duration = self.results.get(script, ("pending", ""))
@@ -1498,7 +1699,7 @@ class AutomationRunnerGUI(tk.Tk):
         self._update_counter()
 
     def _select_failed(self):
-        for _, script, _ in self.tests:
+        for _, script, _, _, _ in self.tests:
             status = self.results.get(script, ("pending", ""))[0]
             self.selected[script] = status == "fail"
         self._refresh_tree()
@@ -1526,8 +1727,9 @@ class AutomationRunnerGUI(tk.Tk):
     def _on_module_changed(self, event=None):
         self._load_module(self.module_var.get())
 
+    # --------------------------------------------------------------------------
     # Small helpers
-
+    # --------------------------------------------------------------------------
     def _browse_excel(self):
         f = filedialog.askopenfilename(
             title="Select Test Case Excel File",
@@ -1563,8 +1765,9 @@ class AutomationRunnerGUI(tk.Tk):
                 self.log_text.get("1.0", tk.END), encoding="utf-8"
             )
 
+    # --------------------------------------------------------------------------
     # Thread-safe UI updates (worker thread -> queue -> UI thread)
-    
+    # --------------------------------------------------------------------------
     def _ui(self, func, *args):
         """Call this from the worker thread to update the UI safely."""
         self.ui_queue.put((func, args))
@@ -1607,15 +1810,16 @@ class AutomationRunnerGUI(tk.Tk):
             text=f"Total: {total}  |  Passed: {passed}  |  Failed: {failed}"
         )
 
+    # --------------------------------------------------------------------------
     # Run / Stop
-
+    # --------------------------------------------------------------------------
     def _start_run(self):
         if self.is_running:
             return
 
         selected_tests = [
-            (script, tid, desc)
-            for tid, script, desc in self.tests
+            (script, tid, desc, home_mod, sheet)
+            for tid, script, desc, home_mod, sheet in self.tests
             if self.selected[script]
         ]
 
@@ -1643,13 +1847,16 @@ class AutomationRunnerGUI(tk.Tk):
             )
             return
 
-        module_name = self.module_var.get()
-        sheet_name = MODULES[module_name]["sheet_name"]
+        selected_mode = self.module_var.get()
 
         self.is_running = True
         self.stop_requested = False
         self.results.clear()  # reset old statuses for current run
-        self.module_results[module_name] = {}
+        if selected_mode == "ALL":
+            for m in MODULES:
+                self.module_results[m] = {}
+        else:
+            self.module_results[selected_mode] = {}
         self.execution_history.clear()
         self._refresh_tree()
         self._refresh_charts()
@@ -1662,7 +1869,7 @@ class AutomationRunnerGUI(tk.Tk):
 
         threading.Thread(
             target=self._run_suite_thread,
-            args=(selected_tests, excel_path, module_name, sheet_name),
+            args=(selected_tests, excel_path, selected_mode),
             daemon=True,
         ).start()
 
@@ -1701,9 +1908,110 @@ class AutomationRunnerGUI(tk.Tk):
             self._kill_current_process()
         self.destroy()
 
-    def _run_suite_thread(self, selected_tests, excel_path, module_name, sheet_name):
-        os.environ["EXCEL_PATH"] = str(Path(excel_path).resolve())
-        os.environ["SHEET_NAME"] = sheet_name
+    def _ensure_excel_updated(
+        self, excel_path: str, sheet_name: str, test_id: str, desc: str, status: str
+    ):
+        """Fallback verification: ensures the test result & screenshot link are in the Excel file."""
+        try:
+            import openpyxl
+
+            wb = openpyxl.load_workbook(excel_path)
+            if sheet_name not in wb.sheetnames:
+                return
+            ws = wb[sheet_name]
+
+            # Locate header row & columns
+            headers = {}
+            h_row_used = 4
+            for h_row in (4, 1, 2, 3, 5):
+                for col in range(1, ws.max_column + 1):
+                    txt = str(ws.cell(h_row, col).value or "").strip().lower()
+                    if txt:
+                        headers[col] = txt
+                if any("status" in t or "actual" in t for t in headers.values()):
+                    h_row_used = h_row
+                    break
+                headers.clear()
+
+            def col_of(*keywords):
+                for kw in keywords:
+                    for col, txt in headers.items():
+                        if kw in txt:
+                            return col
+                return None
+
+            col_actual = col_of("actual")
+            col_status = col_of("status")
+            col_evidence = col_of("remark", "evidence", "screenshot", "screen shot")
+            col_date = col_of("date")
+            col_tester = col_of("tester")
+
+            target_row = None
+            for r in range(h_row_used + 1, ws.max_row + 1):
+                val = str(ws.cell(r, 1).value or "").strip().lower()
+                if val == test_id.strip().lower():
+                    target_row = r
+                    break
+
+            if target_row is None:
+                return
+
+            # Find screenshot inside screenshots/<test_id>/ if available
+            shot_file = None
+            for base in [APP_DIR, BUNDLE_DIR]:
+                tc_shot_dir = base / "screenshots" / test_id.strip()
+                if tc_shot_dir.is_dir():
+                    pngs = sorted(
+                        tc_shot_dir.glob("*.png"), key=lambda p: p.stat().st_mtime
+                    )
+                    if pngs:
+                        fails = [p for p in pngs if "_FAIL.png" in p.name]
+                        shot_file = str((fails[-1] if fails else pngs[-1]).resolve())
+                        break
+
+            changed = False
+            status_label = "Pass" if status == "pass" else "Fail"
+
+            if col_status and not ws.cell(target_row, col_status).value:
+                ws.cell(target_row, col_status).value = status_label
+                changed = True
+
+            if col_actual and not ws.cell(target_row, col_actual).value:
+                ws.cell(target_row, col_actual).value = (
+                    f"{desc} executed ({status_label})"
+                )
+                changed = True
+
+            if col_date and not ws.cell(target_row, col_date).value:
+                ws.cell(target_row, col_date).value = datetime.now().strftime(
+                    "%d-%b-%Y"
+                )
+                changed = True
+
+            if col_tester and not ws.cell(target_row, col_tester).value:
+                ws.cell(target_row, col_tester).value = os.getenv(
+                    "TESTER_NAME", "Automation"
+                )
+                changed = True
+
+            if col_evidence and shot_file:
+                cell = ws.cell(target_row, col_evidence)
+                cell.value = os.path.basename(shot_file)
+                cell.hyperlink = shot_file
+                cell.style = "Hyperlink"
+                changed = True
+
+            if changed:
+                wb.save(excel_path)
+                self._log(
+                    f"   [Excel Updated]: Row {target_row} in '{sheet_name}' -> {status_label}"
+                )
+        except Exception as e:
+            self._log(f"   [!] Excel fallback check warning: {e}")
+
+    def _run_suite_thread(self, selected_tests, excel_path, selected_mode):
+        resolved_excel = str(Path(excel_path).resolve())
+        os.environ["EXCEL_PATH"] = resolved_excel
 
         total = len(selected_tests)
         passed = 0
@@ -1712,13 +2020,13 @@ class AutomationRunnerGUI(tk.Tk):
 
         self._log("=" * 70)
         self._log(
-            f"Starting execution of {total} test(s) for Module: {module_name} (Sheet: {sheet_name})"
+            f"Starting execution of {total} test(s) for Selection: {selected_mode}"
         )
-        self._log(f"Excel Path: {excel_path}")
+        self._log(f"Excel Path: {resolved_excel}")
         self._log("=" * 70 + "\n")
 
         try:
-            for idx, (script_name, test_id, desc) in enumerate(
+            for idx, (script_name, test_id, desc, home_mod, sheet_name) in enumerate(
                 selected_tests, start=1
             ):
                 if self.stop_requested:
@@ -1727,13 +2035,17 @@ class AutomationRunnerGUI(tk.Tk):
                     )
                     break
 
+                os.environ["SHEET_NAME"] = sheet_name
+
                 self._ui(
                     self._set_status_text,
                     f"Running [{idx}/{total}]: {test_id} ({desc})...",
                     self.brand_dark,
                 )
                 self._ui(self._set_result, script_name, "running")
-                self._log(f"[{idx}/{total}] RUNNING: {test_id} ({script_name})...")
+                self._log(
+                    f"[{idx}/{total}] RUNNING: {test_id} ({script_name}) [Sheet: {sheet_name}]..."
+                )
 
                 script_file = find_script_path(script_name)
                 if not script_file:
@@ -1748,13 +2060,15 @@ class AutomationRunnerGUI(tk.Tk):
                         "0.0s",
                         0.0,
                         test_id,
-                        module_name,
+                        home_mod,
                     )
                     self._ui(self._set_progress, idx, total, passed, failed)
                     continue
 
                 test_start = time.time()
-                status = self._execute_test_process(script_file, sheet_name)
+                status = self._execute_test_process(
+                    script_name, script_file, sheet_name, resolved_excel
+                )
                 elapsed = time.time() - test_start
                 duration = f"{elapsed:.1f}s"
 
@@ -1767,6 +2081,11 @@ class AutomationRunnerGUI(tk.Tk):
                     failed += 1
                     self._log(f"   -> FAIL ({duration})\n")
 
+                if status in ("pass", "fail"):
+                    self._ensure_excel_updated(
+                        resolved_excel, sheet_name, test_id, desc, status
+                    )
+
                 self._ui(
                     self._set_result,
                     script_name,
@@ -1774,7 +2093,7 @@ class AutomationRunnerGUI(tk.Tk):
                     duration,
                     elapsed,
                     test_id,
-                    module_name,
+                    home_mod,
                 )
                 self._ui(self._set_progress, idx, total, passed, failed)
         finally:
@@ -1807,23 +2126,37 @@ class AutomationRunnerGUI(tk.Tk):
         self.is_running = False
         self._refresh_charts()
 
-    def _execute_test_process(self, script_path: Path, sheet_name: str):
+    def _execute_test_process(
+        self,
+        rel_script_name: str,
+        script_path: Path,
+        sheet_name: str,
+        excel_path: str,
+    ):
         """Runs one test file. Returns 'pass', 'fail' or 'stopped'."""
         env = {
             **os.environ,
             "PYTHONIOENCODING": "utf-8",
             "SHEET_NAME": sheet_name,
+            "EXCEL_PATH": excel_path,
         }
 
         if getattr(sys, "frozen", False):
-            cmd = [sys.executable, "--worker-test", script_path.name, sheet_name]
+            cmd = [sys.executable, "--worker-test", rel_script_name, sheet_name]
         else:
             cmd = [sys.executable, str(script_path)]
+
+        # Run inside script's parent folder (e.g., core/) so relative imports & .env work
+        work_dir = (
+            str(script_path.parent)
+            if script_path.parent.exists()
+            else str(APP_DIR)
+        )
 
         try:
             proc = subprocess.Popen(
                 cmd,
-                cwd=str(APP_DIR),
+                cwd=work_dir,
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
