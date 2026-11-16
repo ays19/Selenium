@@ -23,6 +23,8 @@ build/
 dist/
 assets/
 core/
+allure-results/
+
 
 # Temporary & Lock files
 ~$*

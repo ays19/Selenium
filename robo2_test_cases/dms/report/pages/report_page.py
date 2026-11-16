@@ -77,7 +77,7 @@ class ReportPage(BasePage):
 
     def assert_table_contains(self, expected_text: str, description: str) -> None:
         if not expected_text:
-            raise LookupError(f"Set the expected sentinel value for {description} in the root .env file.")
+            raise LookupError(f"Set the expected sentinel value for {description} in report/.env.report.")
         def expected_row_visible(_driver) -> bool:
             table = self.report_table(timeout=1)
             return bool(table and expected_text.casefold() in table.text.casefold())
@@ -101,7 +101,7 @@ class ReportPage(BasePage):
                 value = next((v for key, v in values.items() if self.normalize(key) == self.normalize(label)), None)
             if not value:
                 raise LookupError(
-                    f"Missing test value for filter '{label}'. Add it to REPORT_FILTER_VALUES_JSON in .env."
+                    f"Missing test value for filter '{label}'. Add it to REPORT_FILTER_VALUES_JSON in report/.env.report."
                 )
             field = self.find_labeled_field(label)
             self.set_value(field, value)
@@ -113,7 +113,7 @@ class ReportPage(BasePage):
 
     def apply_date_range(self, date_from: str, date_to: str, expected_text: str) -> None:
         if not date_from or not date_to:
-            raise LookupError("Set REPORT_DATE_FROM and REPORT_DATE_TO in the root .env file.")
+            raise LookupError("Set REPORT_DATE_FROM and REPORT_DATE_TO in report/.env.report.")
         from_selector = os.getenv("REPORT_DATE_FROM_SELECTOR", "input[type='date']:first-of-type").strip()
         to_selector = os.getenv("REPORT_DATE_TO_SELECTOR", "input[type='date']:last-of-type").strip()
         from_fields = self.visible_elements(By.CSS_SELECTOR, from_selector)

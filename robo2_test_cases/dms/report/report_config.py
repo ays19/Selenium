@@ -1,10 +1,23 @@
-"""Configuration for the Report test suite. Secrets are read from the root .env file."""
+"""Configuration for the Report test suite.
+
+Settings are read from report/.env.report (role credentials, expected values) with the
+root dms/.env and shell environment taking priority when the same key is set there.
+"""
 from __future__ import annotations
 
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
+
+# Optional report-only settings (role profile credentials etc.) kept next to this file so
+# the root .env never needs to change. override=False: values already in the environment
+# (shell / GUI / root .env) always win over this file.
+REPORT_ENV_FILE = Path(__file__).resolve().parent / ".env.report"
+load_dotenv(REPORT_ENV_FILE, override=False)
 
 
 class ReportConfigError(RuntimeError):
@@ -22,10 +35,16 @@ def get_profile(profile_key: str) -> UserProfile:
     prefix = f"REPORT_PROFILE_{profile_key.upper()}"
     username = os.getenv(f"{prefix}_USERNAME", "").strip()
     password = os.getenv(f"{prefix}_PASSWORD", "")
+    # Generic report account in .env.report is the regular core user.
+    if profile_key == "core_user" and (not username or not password):
+        username = os.getenv("REPORT_USERNAME", "").strip()
+        password = os.getenv("REPORT_PASSWORD", "")
     if not username or not password:
+        hint = "REPORT_USERNAME and REPORT_PASSWORD" if profile_key == "core_user" else (
+            f"{prefix}_USERNAME and {prefix}_PASSWORD"
+        )
         raise ReportConfigError(
-            f"Missing credentials for profile '{profile_key}'. Set "
-            f"{prefix}_USERNAME and {prefix}_PASSWORD in the root .env file."
+            f"Missing credentials for profile '{profile_key}'. Set {hint} in {REPORT_ENV_FILE}."
         )
     return UserProfile(profile_key, username, password)
 
@@ -33,7 +52,7 @@ def get_profile(profile_key: str) -> UserProfile:
 def required_setting(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise ReportConfigError(f"Set {name} in the root .env file before running this test.")
+        raise ReportConfigError(f"Set {name} in {REPORT_ENV_FILE} before running this test.")
     return value
 
 

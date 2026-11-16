@@ -16,18 +16,18 @@ os.environ["SHEET_NAME"] = "Report"
 
 import common as c  # noqa: E402 - env and working directory must be set first
 
-# common.py loads the root .env. Normalize a relative workbook path against the
+# common.py loads the root .env; report_config.py then adds report/.env.report. Normalize a relative workbook path against the
 # project root because the GUI worker launches nested scripts from their folder.
 _excel_path = os.environ.get("EXCEL_PATH") or c.EXCEL_PATH
 if _excel_path:
     _path = Path(_excel_path)
     os.environ["EXCEL_PATH"] = str((_path if _path.is_absolute() else PROJECT_ROOT / _path).resolve())
 
-from report_tests.allure_reporter import AllureReporter  # noqa: E402
-from report_tests.pages.report_page import ReportPage  # noqa: E402
-from report_tests.pages.requested_downloads_page import RequestedDownloadsPage  # noqa: E402
-from report_tests.report_cases import get_case  # noqa: E402
-from report_tests.report_config import ReportConfigError, expected_value, filter_values, get_profile  # noqa: E402
+from report.allure_reporter import AllureReporter  # noqa: E402
+from report.pages.report_page import ReportPage  # noqa: E402
+from report.pages.requested_downloads_page import RequestedDownloadsPage  # noqa: E402
+from report.report_cases import get_case  # noqa: E402
+from report.report_config import ReportConfigError, expected_value, filter_values, get_profile  # noqa: E402
 
 
 class BlockedTest(RuntimeError):
@@ -160,7 +160,7 @@ def _run_export_buttons(page: ReportPage, actions: list[str], download_dir: Path
 
 
 def _verify_requested_download(page: ReportPage, driver, wait, case: dict) -> None:
-    from report_tests.pages.requested_downloads_page import RequestedDownloadsPage
+    from report.pages.requested_downloads_page import RequestedDownloadsPage
     import common as common_module
 
     expected = expected_value("REPORT_EXPECTED_DOWNLOAD_TEXT")
