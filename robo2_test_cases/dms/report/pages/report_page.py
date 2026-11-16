@@ -36,12 +36,15 @@ class ReportPage(BasePage):
 
     def report_table(self, timeout: int = 12):
         def find_table(_driver):
+            # Ant Design (and other sticky-header grids) render the header and the body as
+            # two separate <table> elements. Only accept a table that actually has body rows
+            # so we never return the header-only table and miss the data.
             for selector in self.TABLE_SELECTORS:
                 if not selector:
                     continue
                 for table in self.visible_elements(By.CSS_SELECTOR, selector):
                     try:
-                        if table.find_elements(By.CSS_SELECTOR, "thead, tbody"):
+                        if table.find_elements(By.CSS_SELECTOR, "tbody tr"):
                             return table
                     except Exception:
                         continue

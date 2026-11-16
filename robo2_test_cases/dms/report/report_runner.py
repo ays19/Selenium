@@ -23,6 +23,8 @@ if _excel_path:
     _path = Path(_excel_path)
     os.environ["EXCEL_PATH"] = str((_path if _path.is_absolute() else PROJECT_ROOT / _path).resolve())
 
+from allure_commons.types import AttachmentType  # noqa: E402
+
 from report.allure_reporter import AllureReporter  # noqa: E402
 from report.pages.report_page import ReportPage  # noqa: E402
 from report.pages.requested_downloads_page import RequestedDownloadsPage  # noqa: E402
