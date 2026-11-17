@@ -348,6 +348,7 @@ class ReportSession:
                     self.report_page.choose_page_size(size.strip())
 
         downloaded: list[Path] = []
+        queued_download = False
         with self.step(f"Execute export actions: {', '.join(actions)}"):
             for action in actions:
                 before = {p.name for p in download_dir.glob("*") if p.is_file()}
@@ -360,14 +361,16 @@ class ReportSession:
                 if action.casefold() in {"csv", "excel"}:
                     ext = ".csv" if action.casefold() == "csv" else ".xlsx"
                     try:
-                        downloaded.append(
-                            self.report_page.wait_for_download(
-                                download_dir,
-                                before,
-                                ext,
-                                timeout=12 if requested_download else 30,
-                            )
+                        file_path = self.report_page.wait_for_download_or_queued(
+                            download_dir,
+                            before,
+                            ext,
+                            timeout=12 if requested_download else 30,
                         )
+                        if file_path is None:
+                            queued_download = True
+                        else:
+                            downloaded.append(file_path)
                     except TimeoutError:
                         if not requested_download:
                             raise
@@ -380,7 +383,8 @@ class ReportSession:
                 elif action.casefold() == "copy":
                     self.report_page.assert_accessible()
 
-        if requested_download:
+        verify_requested = requested_download or queued_download
+        if verify_requested:
             with self.step("Verify entry in Requested Downloads page"):
                 self.downloads_page.open(REQUESTED_DOWNLOAD_URL)
                 self.downloads_page.assert_download_request_visible(
@@ -388,7 +392,7 @@ class ReportSession:
                 )
 
         files_info = f" Downloaded: {', '.join(p.name for p in downloaded)}." if downloaded else ""
-        req_info = " Verified in Requested Downloads." if requested_download else ""
+        req_info = " Verified in Requested Downloads." if verify_requested else ""
         return f"Completed export actions ({', '.join(actions)}).{files_info}{req_info}"
 
 

@@ -341,3 +341,33 @@ class ReportPage(BasePage):
             raise TimeoutError(
                 f"No new {extension} report download appeared in {directory} within {timeout} seconds."
             ) from exc
+
+    def wait_for_download_or_queued(
+        self,
+        directory: Path,
+        before: set[str],
+        extension: str,
+        timeout: int = 30,
+    ) -> Path | None:
+        """Wait for a direct file download, or return None if the server queues it to Requested Downloads."""
+        def _ready(_driver):
+            if not list(directory.glob("*.crdownload")):
+                candidates = [
+                    path for path in directory.glob(f"*{extension}")
+                    if path.is_file() and path.name not in before
+                ]
+                if candidates:
+                    candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+                    return candidates[0]
+            body_lower = self.body_text().casefold()
+            if "requested_downloads" in body_lower or "requested downloads" in body_lower:
+                return "QUEUED"
+            return False
+
+        try:
+            result = WebDriverWait(self.driver, timeout, poll_frequency=0.5).until(_ready)
+            return None if result == "QUEUED" else result
+        except TimeoutException as exc:
+            raise TimeoutError(
+                f"No new {extension} report download appeared in {directory} within {timeout} seconds."
+            ) from exc
