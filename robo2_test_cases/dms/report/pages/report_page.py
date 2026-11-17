@@ -63,6 +63,18 @@ class ReportPage(BasePage):
         ".daterangepicker input[name='daterangepicker_end']",
     )
     DATERANGE_APPLY_LOCATOR = (By.CSS_SELECTOR, ".daterangepicker .applyBtn")
+    DOC_TYPE_SELECT2_LOCATOR = (
+        By.CSS_SELECTOR,
+        "[aria-labelledby='select2-document_type-container']",
+    )
+    SELECT2_SEARCH_LOCATOR = (
+        By.CSS_SELECTOR,
+        "span.select2-container--open input.select2-search__field",
+    )
+    SELECT2_RESULTS_LOCATOR = (
+        By.CSS_SELECTOR,
+        ".select2-results__option:not(.loading-results):not(.select2-results__message)",
+    )
     PAGE_SIZE_SELECTORS = (
         ".dataTables_length select",
         "select[name$='_length']",
@@ -264,6 +276,55 @@ class ReportPage(BasePage):
             raise AssertionError(
                 f"Unexpected {description} '{unexpected_text}' was visible in a restricted report."
             )
+
+    def select_document_type(self, doc_type: str) -> None:
+        """Open the Select2 'Search for a document type' dropdown, search, and pick a match."""
+        containers = self.visible_elements(*self.DOC_TYPE_SELECT2_LOCATOR)
+        if not containers:
+            raise LookupError("Document Type Select2 dropdown was not found on this report.")
+        self.click(containers[0])
+        if not self.visible_elements(*self.SELECT2_SEARCH_LOCATOR):
+            # Select2 v4 often listens for mousedown or jQuery .select2('open')
+            self.driver.execute_script(
+                "if (window.jQuery && window.jQuery('#document_type').length) {"
+                "  window.jQuery('#document_type').select2('open');"
+                "} else {"
+                "  arguments[0].dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));"
+                "}",
+                containers[0],
+            )
+        search_box = self.wait.until(
+            lambda _d: (self.visible_elements(*self.SELECT2_SEARCH_LOCATOR) or [None])[0]
+        )
+        search_box.send_keys(doc_type)
+        if not (search_box.get_attribute("value") or "").strip():
+            self.driver.execute_script(
+                "arguments[0].value = arguments[1];"
+                "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));"
+                "arguments[0].dispatchEvent(new KeyboardEvent('keyup', {bubbles: true}));",
+                search_box,
+                doc_type,
+            )
+
+        def _matching_option(_driver):
+            opts = [
+                el for el in self.visible_elements(*self.SELECT2_RESULTS_LOCATOR)
+                if (el.text or "").strip()
+            ]
+            if not opts:
+                return False
+            wanted = doc_type.strip().casefold()
+            exact = next((o for o in opts if o.text.strip().casefold() == wanted), None)
+            partial = next((o for o in opts if wanted in o.text.strip().casefold()), None)
+            return exact or partial or opts[0]
+
+        option = self.wait.until(_matching_option)
+        self.driver.execute_script(
+            "if (window.jQuery) { window.jQuery(arguments[0]).trigger('mouseup'); }"
+            "else { arguments[0].dispatchEvent(new MouseEvent('mouseup', {bubbles: true})); }",
+            option,
+        )
+        self.wait_for_ajax_idle()
 
     def _table_search_input(self):
         for selector in self.TABLE_SEARCH_SELECTORS:

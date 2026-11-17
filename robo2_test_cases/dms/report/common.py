@@ -222,6 +222,17 @@ class ReportSession:
             if check_accessible:
                 self.report_page.assert_accessible()
 
+    def select_document_type(self, doc_type: str = "") -> str:
+        target = (
+            doc_type
+            or expected_value("REPORT_FILTER_DOCUMENT_TYPE")
+            or os.getenv("DOC_TYPE", "").strip()
+            or "aa"
+        )
+        with self.step(f"Select Document Type: '{target}'"):
+            self.report_page.select_document_type(target)
+        return target
+
     def verify_scope(self, visibility: str, role_key: str = "") -> str:
         role = (role_key or self.current_role).upper()
         with self.step(f"Verify report visibility scope: '{visibility}'"):
