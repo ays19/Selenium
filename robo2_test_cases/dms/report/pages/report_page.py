@@ -472,6 +472,17 @@ class ReportPage(BasePage):
                 pass
 
     def choose_page_size(self, size: str = "10") -> None:
+        custom_toggle_sel = ".dataTables_length .length_change > a, .length-option .dropdown > a"
+        try:
+            WebDriverWait(self.driver, 12).until(
+                lambda _d: any(
+                    self.visible_elements(By.CSS_SELECTOR, sel)
+                    for sel in (*self.PAGE_SIZE_SELECTORS, custom_toggle_sel)
+                )
+            )
+        except TimeoutException:
+            pass
+
         for selector in self.PAGE_SIZE_SELECTORS:
             fields = self.visible_elements(By.CSS_SELECTOR, selector)
             if fields:
@@ -493,6 +504,54 @@ class ReportPage(BasePage):
                     select.select_by_visible_text(size)
                 self.wait_for_ajax_idle()
                 return
+
+        # Fallback: Robo2mation custom Bootstrap length dropdown (.length_change)
+        toggles = self.visible_elements(
+            By.CSS_SELECTOR,
+            ".dataTables_length .length_change > a, .length-option .dropdown > a",
+        )
+        if toggles:
+            wanted = size.strip().casefold()
+            current_els = self.visible_elements(
+                By.CSS_SELECTOR,
+                ".dataTables_length #current-length, .length-option #current-length",
+            )
+            if current_els and (current_els[0].text or "").strip().casefold() == wanted:
+                return
+
+            self.click(toggles[0])
+            options = self.visible_elements(
+                By.CSS_SELECTOR,
+                ".dataTables_length .length_change .dropdown-menu a, .length-option .dropdown-menu a",
+            )
+            target = next(
+                (
+                    opt
+                    for opt in options
+                    if (
+                        wanted == "all"
+                        and (
+                            "all" in (opt.text or "").casefold()
+                            or (opt.get_attribute("data-value") or "") == "-1"
+                        )
+                    )
+                    or (opt.get_attribute("data-value") or "").strip().casefold() == wanted
+                    or (opt.text or "").strip().casefold() == wanted
+                ),
+                None,
+            )
+            if target is None:
+                available = [
+                    (opt.get_attribute("data-value") or opt.text).strip()
+                    for opt in options
+                ]
+                raise LookupError(
+                    f"Page-size option '{size}' not found. Available: {available}"
+                )
+            self.click(target)
+            self.wait_for_ajax_idle()
+            return
+
         raise LookupError("The report page-size selector was not found.")
 
     def select_first_row_if_selectable(self) -> None:
