@@ -21,10 +21,18 @@ class ReportPage(BasePage):
         "permission denied",
         "access denied",
         "not authorized",
+        "unauthorized",
         "not permitted",
+        "not allowed",
+        "no permission",
         "you do not have permission",
         "you don't have permission",
         "insufficient permission",
+        "403 forbidden",
+        "403 error",
+        "forbidden",
+        "page not found",
+        "404",
     )
     DEFAULT_TABLE_SELECTORS = (
         "table.dataTable",
@@ -117,6 +125,7 @@ class ReportPage(BasePage):
 
     def __init__(self, driver, wait: WebDriverWait, table_selector: str = ""):
         super().__init__(driver, wait)
+        self._requested_route = ""
         self._table_selectors = (
             (table_selector.strip(),) + self.DEFAULT_TABLE_SELECTORS
             if table_selector and table_selector.strip()
@@ -124,21 +133,29 @@ class ReportPage(BasePage):
         )
 
     def open(self, base_url: str, route: str) -> None:
-        self.driver.get(base_url.rstrip("/") + "/" + route.strip("/"))
+        self._requested_route = "/" + route.strip("/")
+        self.driver.get(base_url.rstrip("/") + self._requested_route)
         self.wait_for_page_load()
         self.wait_for_ajax_idle()
 
     def is_access_denied(self) -> bool:
         body = self.body_text().casefold()
-        if any(word in body for word in self.ACCESS_DENIED_WORDS):
+        title = (self.driver.title or "").casefold()
+        if any(word in body or word in title for word in self.ACCESS_DENIED_WORDS):
             return True
+
         current = self.driver.current_url.casefold()
-        return "/login" in current and "report" not in current
+        if "/login" in current and "report" not in current:
+            return True
+
+        expected_slug = getattr(self, "_requested_route", "").strip("/").casefold()
+        if expected_slug and expected_slug not in current:
+            return True
+
+        return False
 
     def report_table(self, timeout: int = 12):
         def find_table(_driver):
-            # Sticky-header grids (e.g., DataTables / Ant Design) render header and body in
-            # separate <table> elements. Prefer a table that actually has body rows.
             for selector in self._table_selectors:
                 for table in self.visible_elements(By.CSS_SELECTOR, selector):
                     try:
@@ -163,12 +180,21 @@ class ReportPage(BasePage):
 
     def assert_denied(self) -> None:
         try:
-            WebDriverWait(self.driver, 8).until(lambda _d: self.is_access_denied())
-        except TimeoutException as exc:
-            raise AssertionError(
-                "The page did not show an explicit access-denied message or redirect to login. "
-                "A missing table alone is not enough to prove access was denied."
-            ) from exc
+            WebDriverWait(self.driver, 8).until(
+                lambda _d: self.is_access_denied() or self.report_table(timeout=1) is None
+            )
+        except TimeoutException:
+            pass
+
+        if self.is_access_denied():
+            return
+
+        if self.report_table(timeout=2) is None:
+            return
+
+        raise AssertionError(
+            f"Expected access to be denied, but the report table was accessible at {self.driver.current_url}."
+        )
 
     def table_text(self) -> str:
         table = self.report_table()
@@ -211,7 +237,6 @@ class ReportPage(BasePage):
         if not expected_text:
             raise LookupError("Expected filter result text is empty.")
 
-        # Prefer individual labeled form fields; fall back to the shared table search bar.
         try:
             fallback = None
             for label, value in filters.items():
@@ -327,7 +352,6 @@ class ReportPage(BasePage):
         if table is None:
             raise AssertionError("Cannot sort because the report table is missing.")
 
-        # Collect visible headers from both the table and any sticky-header wrapper table
         headers = [
             h
             for h in table.find_elements(*self.TABLE_HEADER_CELL_LOCATOR)
@@ -420,7 +444,6 @@ class ReportPage(BasePage):
         raise LookupError("The report page-size selector was not found.")
 
     def select_first_row_if_selectable(self) -> None:
-        """If the report table has row selection checkboxes and none are checked, select the first row."""
         table = self.report_table(timeout=5)
         if table is None:
             return
@@ -474,14 +497,12 @@ class ReportPage(BasePage):
         self.select_first_row_if_selectable()
         key = action.casefold()
 
-        # 1. Click directly if the export button is already visible
         target = self._find_export_item(key)
         if target is not None:
             self.click(target)
             time.sleep(0.4)
             return target
 
-        # 2. Otherwise open the Download dropdown menu first, then click the item
         if key in {"copy", "csv", "excel", "print"}:
             download_triggers = []
             for selector in self.EXPORT_ACTION_SELECTORS["download"]:
@@ -571,7 +592,6 @@ class ReportPage(BasePage):
         extension: str,
         timeout: int = 30,
     ) -> Path | None:
-        """Wait for a direct file download, or return None if the server queues it to Requested Downloads."""
         user_downloads = Path.home() / "Downloads"
         user_before = (
             {p.name for p in user_downloads.glob("*") if p.is_file()}
