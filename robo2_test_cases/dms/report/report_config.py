@@ -1,22 +1,41 @@
-"""Configuration for the Report test suite.
-
-Settings are read from report/.env.report (role credentials, expected values) with the
-root dms/.env and shell environment taking priority when the same key is set there.
-"""
+"""Configuration for the Report test suite (JSON-free, minimal .env.report)."""
 from __future__ import annotations
 
-import os
-import re
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import re
 
 from dotenv import load_dotenv
 
-# Optional report-only settings (role profile credentials etc.) kept next to this file so
-# the root .env never needs to change. override=False: values already in the environment
-# (shell / GUI / root .env) always win over this file.
-REPORT_ENV_FILE = Path(__file__).resolve().parent / ".env.report"
+REPORT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = REPORT_DIR.parent
+REPORT_ENV_FILE = REPORT_DIR / ".env.report"
+
+# Load root .env first, then report/.env.report without overriding shell/GUI variables
+load_dotenv(PROJECT_ROOT / ".env", override=False)
 load_dotenv(REPORT_ENV_FILE, override=False)
+
+MANAGER_ROLES = {
+    "core_report_manager",
+    "dms_report_manager",
+    "wf_admin",
+    "wf_manager",
+    "wf_all_process",
+}
+
+# Fallback aliases so you don't have to repeat identical filter values in .env.report
+FILTER_KEY_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "REPORT_FILTER_USER": ("REPORT_FILTER_USERS_NAME", "REPORT_USERNAME"),
+    "REPORT_FILTER_USERS": ("REPORT_FILTER_USERS_NAME", "REPORT_USERNAME"),
+    "REPORT_FILTER_ALL_USERS": ("REPORT_FILTER_USERS_NAME", "REPORT_USERNAME"),
+    "REPORT_FILTER_UPLOADER": ("REPORT_FILTER_USERS_NAME", "DMS_USERNAME"),
+    "REPORT_FILTER_INITIATOR_NAME": ("REPORT_FILTER_USERS_NAME", "REPORT_USERNAME"),
+    "REPORT_FILTER_IP": ("REPORT_FILTER_IP_ADDRESS",),
+    "REPORT_FILTER_SOURCE_IP": ("REPORT_FILTER_IP_ADDRESS",),
+    "REPORT_FILTER_OPERATION": ("REPORT_FILTER_OPERATIONS",),
+    "REPORT_FILTER_ALL_OPERATION": ("REPORT_FILTER_OPERATIONS",),
+}
 
 
 class ReportConfigError(RuntimeError):
@@ -31,17 +50,38 @@ class UserProfile:
 
 
 def get_profile(profile_key: str) -> UserProfile:
-    prefix = f"REPORT_PROFILE_{profile_key.upper()}"
-    username = os.getenv(f"{prefix}_USERNAME", "").strip()
-    password = os.getenv(f"{prefix}_PASSWORD", "")
-    # Generic report account in .env.report is the regular core user.
-    if profile_key == "core_user" and (not username or not password):
-        username = os.getenv("REPORT_USERNAME", "").strip()
-        password = os.getenv("REPORT_PASSWORD", "")
-    if not username or not password:
-        hint = "REPORT_USERNAME and REPORT_PASSWORD" if profile_key == "core_user" else (
-            f"{prefix}_USERNAME and {prefix}_PASSWORD"
+    """Resolve credentials for a role key using the 2 main accounts or role-specific overrides."""
+    key = profile_key.strip().lower()
+    prefix = f"REPORT_PROFILE_{key.upper()}"
+
+    if key in MANAGER_ROLES:
+        username = (
+            os.getenv(f"{prefix}_USERNAME")
+            or os.getenv("REPORT_MANAGER_USERNAME")
+            or os.getenv("DMS_USERNAME")
+            or ""
+        ).strip()
+        password = (
+            os.getenv(f"{prefix}_PASSWORD")
+            or os.getenv("REPORT_MANAGER_PASSWORD")
+            or os.getenv("DMS_PASSWORD")
+            or ""
         )
+        hint = "REPORT_MANAGER_USERNAME and REPORT_MANAGER_PASSWORD"
+    else:
+        username = (
+            os.getenv(f"{prefix}_USERNAME")
+            or os.getenv("REPORT_USERNAME")
+            or ""
+        ).strip()
+        password = (
+            os.getenv(f"{prefix}_PASSWORD")
+            or os.getenv("REPORT_PASSWORD")
+            or ""
+        )
+        hint = "REPORT_USERNAME and REPORT_PASSWORD"
+
+    if not username or not password:
         raise ReportConfigError(
             f"Missing credentials for profile '{profile_key}'. Set {hint} in {REPORT_ENV_FILE}."
         )
@@ -68,6 +108,11 @@ def filter_values(labels: list[str] | None = None) -> dict[str, str]:
     for label in labels:
         env_key = _env_key_for_filter(label)
         value = os.getenv(env_key, "").strip()
+        if not value:
+            for fallback_key in FILTER_KEY_FALLBACKS.get(env_key, ()):
+                value = os.getenv(fallback_key, "").strip()
+                if value:
+                    break
         if not value:
             raise ReportConfigError(
                 f"Missing test value for filter '{label}'. Set {env_key} in {REPORT_ENV_FILE}."

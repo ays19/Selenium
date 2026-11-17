@@ -1,11 +1,8 @@
 """
-Industry-standard POM + Allure + Excel foundation for the Robo2mation Report suite.
-- Pure Python, Selenium WebDriver, OpenPyXL, and allure-python-commons (no pytest).
-- Provides:
-    * LoginPage(BasePage): POM authentication and session switching
-    * ReportSession: High-level POM + Allure facade for concise, readable test scripts
-    * BrowserManager, EvidenceManager, ExcelReporter
-    * run_report_test(): Standardized test runner (parses docstring, runs POM, updates Excel & Allure)
+Clean POM + Allure + Excel foundation for the Robo2mation Report test suite.
+- Uses Page Object Model: LoginPage(BasePage), ReportPage, RequestedDownloadsPage
+- Uses AllureReporter for step logging, screenshots, and in-memory failure DOM/tracebacks
+- Saves screenshots to SCREENSHOT_DIR and links them in the Report Excel worksheet
 """
 from __future__ import annotations
 
@@ -17,7 +14,7 @@ import sys
 import traceback
 from typing import Callable, Sequence
 
-# Ensure both `dms/` and `dms/report/` are importable regardless of working directory
+# Ensure both `dms/` and `dms/report/` are on sys.path
 REPORT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = REPORT_DIR.parent
 for _p in (str(REPORT_DIR), str(PROJECT_ROOT)):
@@ -47,21 +44,21 @@ from report.pages.report_page import ReportPage  # noqa: E402
 from report.pages.requested_downloads_page import RequestedDownloadsPage  # noqa: E402
 from report.report_config import (  # noqa: E402
     ReportConfigError,
+    date_selectors,
     expected_value,
     filter_values,
     get_profile,
+    table_selector,
 )
 
 
 # ---------------------------------------------------------------------------
-# 1. Environment & Directory Configuration
+# 1. Configuration & Directories
 # ---------------------------------------------------------------------------
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 load_dotenv(REPORT_DIR / ".env.report", override=False)
 
 BASE_URL: str = (os.getenv("BASE_URL") or "").rstrip("/")
-USERNAME: str = os.getenv("REPORT_USERNAME") or os.getenv("DMS_USERNAME") or ""
-PASSWORD: str = os.getenv("REPORT_PASSWORD") or os.getenv("DMS_PASSWORD") or ""
 TESTER_NAME: str = os.getenv("TESTER_NAME") or ""
 SHEET_NAME: str = os.getenv("SHEET_NAME", "Report")
 EXCEL_PATH: str = os.getenv("EXCEL_PATH") or ""
@@ -71,8 +68,7 @@ HEADER_ROW: int = 4
 
 
 def _resolve_dir(env_key: str, default_name: str) -> Path:
-    raw = os.getenv(env_key, default_name)
-    path = Path(raw)
+    path = Path(os.getenv(env_key, default_name))
     resolved = path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
     resolved.mkdir(parents=True, exist_ok=True)
     return resolved
@@ -83,40 +79,22 @@ DOWNLOAD_DIR: str = str(_resolve_dir("DOWNLOAD_DIR", "downloads"))
 ALLURE_RESULTS_DIR: Path = _resolve_dir("REPORT_ALLURE_RESULTS_DIR", "allure-results")
 REQUESTED_DOWNLOAD_URL: str = f"{BASE_URL}/requested_downloads/view/"
 
+_LAST_SAVED_SHOTS: dict[str, list[str]] = {}
+
 
 class SetupError(RuntimeError):
     """Raised when login, browser initialization, or test setup fails."""
 
 
 class BlockedTest(RuntimeError):
-    """Raised when required role credentials or sentinel test data are missing in .env.report."""
-
-
-# Active AllureReporter context so POM classes and helpers can log steps/attachments
-_ACTIVE_REPORTER: AllureReporter | None = None
-
-
-def set_active_reporter(reporter: AllureReporter | None) -> None:
-    global _ACTIVE_REPORTER
-    _ACTIVE_REPORTER = reporter
-
-
-def get_active_reporter() -> AllureReporter | None:
-    return _ACTIVE_REPORTER
-
-
-def allure_step(title: str):
-    """Context manager that records an Allure step if a reporter is active."""
-    if _ACTIVE_REPORTER and _ACTIVE_REPORTER.test_uuid:
-        return _ACTIVE_REPORTER.step(title)
-    return nullcontext()
+    """Raised when required role credentials or test data are missing in .env.report."""
 
 
 # ---------------------------------------------------------------------------
-# 2. Page Object Model: LoginPage (with Allure Step Integration)
+# 2. Page Object Model: LoginPage
 # ---------------------------------------------------------------------------
 class LoginPage(BasePage):
-    """Page Object encapsulating Robo2mation authentication and session management."""
+    """Page Object handling authentication and user session switching."""
 
     USERNAME_INPUT = (By.XPATH, "//input[contains(@placeholder, 'Username')]")
     PASSWORD_INPUT = (By.XPATH, "//input[contains(@placeholder, 'Password')]")
@@ -135,12 +113,11 @@ class LoginPage(BasePage):
     ):
         super().__init__(driver, wait)
         self.base_url = (base_url or BASE_URL).rstrip("/")
-        self.reporter = reporter or _ACTIVE_REPORTER
+        self.reporter = reporter
 
     def _step(self, title: str):
-        active = self.reporter or _ACTIVE_REPORTER
-        if active and active.test_uuid:
-            return active.step(title)
+        if self.reporter and self.reporter.test_uuid:
+            return self.reporter.step(title)
         return nullcontext()
 
     def is_login_page_displayed(self, timeout: int = 5) -> bool:
@@ -153,27 +130,20 @@ class LoginPage(BasePage):
             return False
 
     def clear_session(self) -> None:
-        with self._step("Clear browser cookies and storage"):
-            try:
-                self.driver.delete_all_cookies()
-            except Exception:
-                pass
-            try:
-                self.driver.execute_script(
-                    "window.localStorage.clear(); window.sessionStorage.clear();"
-                )
-            except Exception:
-                pass
+        try:
+            self.driver.delete_all_cookies()
+            self.driver.execute_script(
+                "window.localStorage.clear(); window.sessionStorage.clear();"
+            )
+        except Exception:
+            pass
 
     def get_popup_message(self) -> str:
-        messages: list[str] = []
-        for elem in self.visible_elements(By.CSS_SELECTOR, self.MESSAGE_SELECTORS):
-            try:
-                text = elem.text.strip()
-                if text:
-                    messages.append(text)
-            except StaleElementReferenceException:
-                continue
+        messages = [
+            el.text.strip()
+            for el in self.visible_elements(By.CSS_SELECTOR, self.MESSAGE_SELECTORS)
+            if el.text.strip()
+        ]
         return " | ".join(messages)
 
     def login_as(self, username: str, password: str) -> None:
@@ -201,8 +171,7 @@ class LoginPage(BasePage):
             except TimeoutException as exc:
                 popup = self.get_popup_message() or "no error banner shown"
                 raise SetupError(
-                    f"Login as '{username}' failed (still on login page). "
-                    f"Verify credentials in report/.env.report. Page message: {popup}"
+                    f"Login as '{username}' failed. Check report/.env.report. Page message: {popup}"
                 ) from exc
 
     def logout(self) -> None:
@@ -213,27 +182,23 @@ class LoginPage(BasePage):
                 self.driver.get(self.base_url)
 
     def switch_user(self, username: str, password: str) -> None:
-        with self._step(f"Switch user session to '{username}'"):
+        with self._step(f"Switch session to user '{username}'"):
             self.logout()
             self.login_as(username, password)
 
 
 # ---------------------------------------------------------------------------
-# 3. High-Level POM + Allure Session Facade (Keeps Test Scripts Ultra-Clean)
+# 3. POM + Allure Test Session Facade (ReportSession)
 # ---------------------------------------------------------------------------
 class ReportSession:
-    """
-    Combines LoginPage, ReportPage, RequestedDownloadsPage, and AllureReporter
-    into one cohesive POM interface so each repXXX_*.py test script is concise,
-    self-documenting, and reusable.
-    """
+    """High-level POM + Allure facade used by individual repXXX_*.py test scripts."""
 
     def __init__(self, driver: WebDriver, wait: WebDriverWait, reporter: AllureReporter):
         self.driver = driver
         self.wait = wait
         self.reporter = reporter
         self.login_page = LoginPage(driver, wait, BASE_URL, reporter)
-        self.report_page = ReportPage(driver, wait)
+        self.report_page = ReportPage(driver, wait, table_selector=table_selector())
         self.downloads_page = RequestedDownloadsPage(driver, wait)
         self._logged_in = False
         self.current_role = ""
@@ -242,7 +207,6 @@ class ReportSession:
         return self.reporter.step(title)
 
     def login_as_role(self, role_key: str) -> str:
-        """Sign in (or switch session) using a role key from report/.env.report."""
         profile = get_profile(role_key)
         if self._logged_in:
             self.login_page.switch_user(profile.username, profile.password)
@@ -253,16 +217,12 @@ class ReportSession:
         return profile.username
 
     def open_report(self, route: str, check_accessible: bool = True) -> None:
-        """Navigate to the report route and optionally verify the table is accessible."""
         with self.step(f"Open report page ({route})"):
             self.report_page.open(BASE_URL, route)
             if check_accessible:
                 self.report_page.assert_accessible()
 
     def verify_scope(self, visibility: str, role_key: str = "") -> str:
-        """
-        Verify role-based data visibility ('own', 'all', 'related', 'department', 'denied', 'accessible').
-        """
         role = (role_key or self.current_role).upper()
         with self.step(f"Verify report visibility scope: '{visibility}'"):
             if visibility == "denied":
@@ -298,38 +258,42 @@ class ReportSession:
                 )
                 if not other:
                     raise BlockedTest(
-                        f"Set REPORT_EXPECTED_OTHER_TEXT in report/.env.report to verify restricted rows."
+                        "Set REPORT_EXPECTED_OTHER_TEXT in report/.env.report to verify restricted rows."
                     )
                 self.report_page.assert_table_not_contains(other, "another user's record")
                 return f"Role '{role.lower()}': sees own record ('{expected}') and cannot see '{other}'."
 
             return f"Role '{role.lower()}': verified '{visibility}' record ('{expected}')."
 
-    def search_or_filter(self, labels: list[str], expected_key: str = "REPORT_EXPECTED_FILTER_TEXT") -> str:
-        """Apply search or filter fields and verify expected result row."""
-        with self.step(f"Search/Filter report by: {', '.join(labels)}"):
-            self.report_page.apply_label_filters(
-                labels=labels,
-                values=filter_values(),
-                expected_text=expected_value(expected_key),
+    def search_or_filter(
+        self, labels: list[str], expected_key: str = "REPORT_EXPECTED_FILTER_TEXT"
+    ) -> str:
+        expected_row = expected_value(expected_key) or expected_value("REPORT_EXPECTED_FILTER_TEXT")
+        if not expected_row:
+            raise BlockedTest(
+                f"Set {expected_key} (or REPORT_EXPECTED_FILTER_TEXT) in report/.env.report."
             )
+        filters_dict = filter_values(labels)
+        with self.step(f"Search/Filter report by: {', '.join(labels)}"):
+            self.report_page.apply_label_filters(filters_dict, expected_row)
         return f"Searched/Filtered by {', '.join(labels)} and verified matching rows."
 
     def filter_by_date(self, expected_key: str = "REPORT_EXPECTED_DATE_TEXT") -> str:
-        """Apply configured date range from .env.report and verify matching row."""
         date_from = expected_value("REPORT_DATE_FROM")
         date_to = expected_value("REPORT_DATE_TO")
-        expected_row = expected_value(expected_key)
+        expected_row = expected_value(expected_key) or expected_value("REPORT_EXPECTED_DATE_TEXT")
         if not date_from or not date_to or not expected_row:
             raise BlockedTest(
                 "Set REPORT_DATE_FROM, REPORT_DATE_TO, and REPORT_EXPECTED_DATE_TEXT in report/.env.report."
             )
+        from_sel, to_sel = date_selectors()
         with self.step(f"Filter by date range ({date_from} to {date_to})"):
-            self.report_page.apply_date_range(date_from, date_to, expected_row)
+            self.report_page.apply_date_range(
+                date_from, date_to, expected_row, from_selector=from_sel, to_selector=to_sel
+            )
         return f"Applied date range ({date_from} to {date_to}) and verified '{expected_row}'."
 
     def sort_by(self, columns: list[str]) -> str:
-        """Sort report table by each column in `columns`."""
         with self.step(f"Sort report columns: {', '.join(columns)}"):
             self.report_page.sort_columns(columns)
         return f"Verified sorting on columns: {', '.join(columns)}."
@@ -340,7 +304,6 @@ class ReportSession:
         page_sizes: Sequence[str] = (),
         requested_download: bool = False,
     ) -> str:
-        """Execute Copy/CSV/Excel/Print export controls and optionally verify Requested Downloads."""
         download_dir = Path(DOWNLOAD_DIR)
         if page_sizes:
             with self.step(f"Test page sizes: {', '.join(page_sizes)}"):
@@ -397,262 +360,77 @@ class ReportSession:
 
 
 # ---------------------------------------------------------------------------
-# 4. WebDriver Factory (BrowserManager)
+# 4. Browser, Screenshot, Allure & Excel Utilities
 # ---------------------------------------------------------------------------
-class BrowserManager:
-    """Creates and configures a Chrome WebDriver instance for Report tests."""
-
-    @staticmethod
-    def create_driver(
-        download_dir: str = DOWNLOAD_DIR,
-        timeout: int = 15,
-    ) -> tuple[WebDriver, WebDriverWait]:
-        with allure_step("Launch Chrome WebDriver"):
-            options = Options()
-            options.add_experimental_option(
-                "prefs",
-                {
-                    "download.default_directory": os.path.abspath(download_dir),
-                    "download.prompt_for_download": False,
-                    "profile.default_content_setting_values.automatic_downloads": 1,
-                },
-            )
-            driver = webdriver.Chrome(options=options)
-            driver.maximize_window()
-            wait = WebDriverWait(
-                driver,
-                timeout,
-                ignored_exceptions=(
-                    NoSuchElementException,
-                    StaleElementReferenceException,
-                ),
-            )
-            return driver, wait
-
-
-# ---------------------------------------------------------------------------
-# 5. Screenshot & Allure Evidence Manager (No debug/ disk clutter)
-# ---------------------------------------------------------------------------
-class EvidenceManager:
-    """Saves screenshots for Excel hyperlinks and attaches evidence directly to Allure."""
-
-    def __init__(self, screenshot_dir: str = SCREENSHOT_DIR):
-        self.screenshot_dir = Path(screenshot_dir).resolve()
-        self.saved_shots: dict[str, list[str]] = {}
-
-    def save_screenshot(
-        self,
-        driver: WebDriver,
-        test_case_id: str,
-        slug: str,
-        result: str,
-        attach_to_allure: bool = True,
-    ) -> str:
-        tc_id = str(test_case_id).strip()
-        tc_folder = self.screenshot_dir / tc_id
-        tc_folder.mkdir(parents=True, exist_ok=True)
-
-        file_path = (tc_folder / f"{tc_id}_{slug}_{result}.png").resolve()
-        driver.save_screenshot(str(file_path))
-        self.saved_shots.setdefault(tc_id, []).append(str(file_path))
-        print(f"   [Screenshot saved]: {file_path}")
-
-        if attach_to_allure and _ACTIVE_REPORTER and _ACTIVE_REPORTER.test_uuid:
-            _ACTIVE_REPORTER.attach_file(
-                file_path,
-                name=f"{tc_id} ({result}) Screenshot",
-                attachment_type=AttachmentType.PNG,
-            )
-        return str(file_path)
-
-    @staticmethod
-    def attach_failure_diagnostics(driver: WebDriver | None, tb_text: str = "") -> None:
-        """Attach DOM HTML and traceback directly to Allure in-memory (no debug/ folder)."""
-        if not (_ACTIVE_REPORTER and _ACTIVE_REPORTER.test_uuid):
-            return
-        if driver:
-            try:
-                _ACTIVE_REPORTER.lifecycle.attach_data(
-                    uuid4(),
-                    driver.page_source,
-                    name="Failure Page DOM (HTML)",
-                    attachment_type=AttachmentType.HTML,
-                    parent_uuid=_ACTIVE_REPORTER.test_uuid,
-                )
-            except Exception:
-                pass
-        if tb_text:
-            _ACTIVE_REPORTER.attach_text(tb_text, "Python Traceback")
-
-    def resolve_latest_screenshot(
-        self,
-        test_case_id: str,
-        shot_paths: Sequence[str] | None = None,
-    ) -> str | None:
-        tc_id = str(test_case_id).strip()
-        candidates = list(shot_paths or []) or list(self.saved_shots.get(tc_id, []))
-        valid = [str(Path(p).resolve()) for p in candidates if p and Path(p).is_file()]
-
-        if not valid:
-            tc_folder = self.screenshot_dir / tc_id
-            if tc_folder.is_dir():
-                pngs = sorted(
-                    tc_folder.glob("*.png"),
-                    key=lambda item: item.stat().st_mtime,
-                )
-                valid = [str(p.resolve()) for p in pngs]
-
-        if not valid:
-            return None
-
-        fail_shots = [p for p in valid if "_FAIL.png" in p]
-        return fail_shots[-1] if fail_shots else valid[-1]
-
-
-# ---------------------------------------------------------------------------
-# 6. Excel Reporter (with Allure Step Integration & Screenshot Hyperlinking)
-# ---------------------------------------------------------------------------
-class ExcelReporter:
-    """Validates and updates the Report sheet in the Excel workbook with screenshot links."""
-
-    def __init__(self, evidence_manager: EvidenceManager):
-        self.evidence = evidence_manager
-
-    @staticmethod
-    def get_active_excel_and_sheet() -> tuple[str, str]:
-        raw_excel = os.environ.get("EXCEL_PATH") or EXCEL_PATH
-        if not raw_excel:
-            raise SystemExit("EXCEL_PATH is not set in .env or environment.")
-        excel_path = Path(raw_excel)
-        if not excel_path.is_absolute():
-            excel_path = (PROJECT_ROOT / excel_path).resolve()
-        sheet_name = os.environ.get("SHEET_NAME") or SHEET_NAME or "Report"
-        return str(excel_path), sheet_name
-
-    @staticmethod
-    def find_row_and_columns(
-        ws, test_case_id: str
-    ) -> tuple[int | None, dict[str, int | None]]:
-        headers: dict[int, str] = {}
-        for h_row in (HEADER_ROW, 1, 2, 3, 5):
-            for col in range(1, ws.max_column + 1):
-                text = str(ws.cell(h_row, col).value or "").strip().lower()
-                if text:
-                    headers[col] = text
-            if any("status" in t or "actual" in t for t in headers.values()):
-                break
-            headers.clear()
-
-        def col_of(*keywords: str) -> int | None:
-            for kw in keywords:
-                for col, text in headers.items():
-                    if kw in text:
-                        return col
-            return None
-
-        columns = {
-            "actual": col_of("actual"),
-            "status": col_of("status"),
-            "evidence": col_of(
-                EVIDENCE_HEADER, "remark", "evidence", "screenshot", "screen shot"
-            ),
-            "date": col_of("date"),
-            "tester": col_of("tester"),
-        }
-
-        target_id = str(test_case_id).strip().lower()
-        target_row = None
-        for row_idx in range(1, ws.max_row + 1):
-            cell_val = str(ws.cell(row_idx, 1).value or "").strip().lower()
-            if cell_val == target_id:
-                target_row = row_idx
-                break
-
-        return target_row, columns
-
-    def check_ready(self, test_case_id: str) -> None:
-        with allure_step(f"Validate Excel worksheet row for {test_case_id}"):
-            excel_path, sheet_name = self.get_active_excel_and_sheet()
-            print(
-                f"Checking Excel: {excel_path} [Sheet: {sheet_name}] for {test_case_id}"
-            )
-            wb = openpyxl.load_workbook(excel_path)
-            ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
-            row, columns = self.find_row_and_columns(ws, test_case_id)
-            if row is None:
-                raise SystemExit(
-                    f"{test_case_id} not found in column A of sheet '{ws.title}' in {excel_path}"
-                )
-            missing = [k for k, v in columns.items() if v is None]
-            print(f"Row {row} found in '{ws.title}'. Missing columns: {missing or 'none'}")
-            try:
-                with open(excel_path, "ab"):
-                    pass
-            except PermissionError as exc:
-                raise SystemExit("Close the Excel file first, then run again.") from exc
-
-    def write_result(
-        self,
-        test_case_id: str,
-        actual: str,
-        status: str,
-        shot_paths: Sequence[str] | None = None,
-    ) -> None:
-        with allure_step(f"Write '{status}' result & screenshot link to Excel"):
-            excel_path, sheet_name = self.get_active_excel_and_sheet()
-            wb = openpyxl.load_workbook(excel_path)
-            ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
-            row, columns = self.find_row_and_columns(ws, test_case_id)
-            if row is None:
-                print(
-                    f"[!] Warning: Row for {test_case_id} not found in sheet '{ws.title}'"
-                )
-                return
-
-            shot_file = self.evidence.resolve_latest_screenshot(
-                test_case_id, shot_paths
-            )
-            if shot_file:
-                target_link = os.path.abspath(shot_file)
-                display_text = os.path.basename(shot_file)
-            else:
-                target_link = EVIDENCE_LINK
-                display_text = "Evidence Doc"
-
-            values = {
-                "actual": actual,
-                "status": status,
-                "evidence": display_text,
-                "date": datetime.now().strftime("%d-%b-%Y"),
-                "tester": os.getenv("TESTER_NAME") or TESTER_NAME,
-            }
-            for key, col in columns.items():
-                if col:
-                    ws.cell(row, col).value = values[key]
-
-            if columns["evidence"] and target_link:
-                cell = ws.cell(row, columns["evidence"])
-                cell.value = display_text
-                cell.hyperlink = target_link
-                cell.style = "Hyperlink"
-
-            wb.save(excel_path)
-            print(
-                f"Saved to: {os.path.abspath(excel_path)}  (sheet '{ws.title}', row {row})"
-            )
-
-
-# ---------------------------------------------------------------------------
-# 7. Public Facade & Unified POM Test Runner
-# ---------------------------------------------------------------------------
-evidence_manager = EvidenceManager()
-excel_reporter = ExcelReporter(evidence_manager)
-
-
 def create_allure_reporter() -> AllureReporter:
-    reporter = AllureReporter(ALLURE_RESULTS_DIR)
-    set_active_reporter(reporter)
-    return reporter
+    return AllureReporter(ALLURE_RESULTS_DIR)
+
+
+def start_browser(timeout: int = 15) -> tuple[WebDriver, WebDriverWait]:
+    options = Options()
+    options.add_experimental_option(
+        "prefs",
+        {
+            "download.default_directory": os.path.abspath(DOWNLOAD_DIR),
+            "download.prompt_for_download": False,
+            "profile.default_content_setting_values.automatic_downloads": 1,
+        },
+    )
+    driver = webdriver.Chrome(options=options)
+    driver.maximize_window()
+    wait = WebDriverWait(
+        driver,
+        timeout,
+        ignored_exceptions=(NoSuchElementException, StaleElementReferenceException),
+    )
+    return driver, wait
+
+
+def save_shot(
+    driver: WebDriver,
+    test_case_id: str,
+    slug: str,
+    result: str,
+    reporter: AllureReporter | None = None,
+) -> str:
+    tc_id = str(test_case_id).strip()
+    tc_folder = Path(SCREENSHOT_DIR).resolve() / tc_id
+    tc_folder.mkdir(parents=True, exist_ok=True)
+
+    file_path = (tc_folder / f"{tc_id}_{slug}_{result}.png").resolve()
+    driver.save_screenshot(str(file_path))
+    _LAST_SAVED_SHOTS.setdefault(tc_id, []).append(str(file_path))
+    print(f"   [Screenshot saved]: {file_path}")
+
+    if reporter and reporter.test_uuid:
+        reporter.attach_file(
+            file_path,
+            name=f"{tc_id} ({result}) Screenshot",
+            attachment_type=AttachmentType.PNG,
+        )
+    return str(file_path)
+
+
+def attach_failure_diagnostics(
+    driver: WebDriver | None,
+    tb_text: str = "",
+    reporter: AllureReporter | None = None,
+) -> None:
+    if not (reporter and reporter.test_uuid):
+        return
+    if driver:
+        try:
+            reporter.lifecycle.attach_data(
+                uuid4(),
+                driver.page_source,
+                name="Failure Page DOM (HTML)",
+                attachment_type=AttachmentType.HTML,
+                parent_uuid=reporter.test_uuid,
+            )
+        except Exception:
+            pass
+    if tb_text:
+        reporter.attach_text(tb_text, "Python Traceback")
 
 
 def short(error: BaseException) -> str:
@@ -674,37 +452,97 @@ def short(error: BaseException) -> str:
     return f"{type(error).__name__}: {first}"
 
 
-def start_browser() -> tuple[WebDriver, WebDriverWait]:
-    return BrowserManager.create_driver()
+# ---------------------------------------------------------------------------
+# 5. Excel Validation & Result Reporting
+# ---------------------------------------------------------------------------
+def _active_excel_and_sheet() -> tuple[str, str]:
+    raw_excel = os.environ.get("EXCEL_PATH") or EXCEL_PATH
+    if not raw_excel:
+        raise SystemExit("EXCEL_PATH is not set in .env or environment.")
+    excel_path = Path(raw_excel)
+    if not excel_path.is_absolute():
+        excel_path = (PROJECT_ROOT / excel_path).resolve()
+    sheet_name = os.environ.get("SHEET_NAME") or SHEET_NAME or "Report"
+    return str(excel_path), sheet_name
 
 
-def login_as(driver: WebDriver, wait: WebDriverWait, username: str, password: str) -> None:
-    LoginPage(driver, wait).login_as(username, password)
+def _find_row_and_columns(ws, test_case_id: str) -> tuple[int | None, dict[str, int | None]]:
+    headers: dict[int, str] = {}
+    for h_row in (HEADER_ROW, 1, 2, 3, 5):
+        for col in range(1, ws.max_column + 1):
+            text = str(ws.cell(h_row, col).value or "").strip().lower()
+            if text:
+                headers[col] = text
+        if any("status" in t or "actual" in t for t in headers.values()):
+            break
+        headers.clear()
 
+    def col_of(*keywords: str) -> int | None:
+        for kw in keywords:
+            for col, text in headers.items():
+                if kw in text:
+                    return col
+        return None
 
-def logout(driver: WebDriver, wait: WebDriverWait | None = None) -> None:
-    effective_wait = wait or WebDriverWait(driver, 5)
-    LoginPage(driver, effective_wait).logout()
+    columns = {
+        "actual": col_of("actual"),
+        "status": col_of("status"),
+        "evidence": col_of(
+            EVIDENCE_HEADER, "remark", "evidence", "screenshot", "screen shot"
+        ),
+        "date": col_of("date"),
+        "tester": col_of("tester"),
+    }
 
-
-def save_shot(
-    driver: WebDriver,
-    test_case_id: str,
-    slug: str,
-    result: str,
-    attach_to_allure: bool = True,
-) -> str:
-    return evidence_manager.save_screenshot(
-        driver, test_case_id, slug, result, attach_to_allure=attach_to_allure
+    target_id = str(test_case_id).strip().lower()
+    target_row = next(
+        (
+            r
+            for r in range(1, ws.max_row + 1)
+            if str(ws.cell(r, 1).value or "").strip().lower() == target_id
+        ),
+        None,
     )
+    return target_row, columns
 
 
-def attach_failure_diagnostics(driver: WebDriver | None, tb_text: str = "") -> None:
-    evidence_manager.attach_failure_diagnostics(driver, tb_text)
+def _resolve_latest_screenshot(
+    test_case_id: str, shot_paths: Sequence[str] | None = None
+) -> str | None:
+    tc_id = str(test_case_id).strip()
+    candidates = list(shot_paths or []) or list(_LAST_SAVED_SHOTS.get(tc_id, []))
+    valid = [str(Path(p).resolve()) for p in candidates if p and Path(p).is_file()]
+
+    if not valid:
+        tc_folder = Path(SCREENSHOT_DIR).resolve() / tc_id
+        if tc_folder.is_dir():
+            pngs = sorted(tc_folder.glob("*.png"), key=lambda item: item.stat().st_mtime)
+            valid = [str(p.resolve()) for p in pngs]
+
+    if not valid:
+        return None
+
+    fail_shots = [p for p in valid if "_FAIL.png" in p]
+    return fail_shots[-1] if fail_shots else valid[-1]
 
 
 def check_excel_ready(test_case_id: str) -> None:
-    excel_reporter.check_ready(test_case_id)
+    excel_path, sheet_name = _active_excel_and_sheet()
+    print(f"Checking Excel: {excel_path} [Sheet: {sheet_name}] for {test_case_id}")
+    wb = openpyxl.load_workbook(excel_path)
+    ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+    row, columns = _find_row_and_columns(ws, test_case_id)
+    if row is None:
+        raise SystemExit(
+            f"{test_case_id} not found in column A of sheet '{ws.title}' in {excel_path}"
+        )
+    missing = [k for k, v in columns.items() if v is None]
+    print(f"Row {row} found in '{ws.title}'. Missing columns: {missing or 'none'}")
+    try:
+        with open(excel_path, "ab"):
+            pass
+    except PermissionError as exc:
+        raise SystemExit("Close the Excel file first, then run again.") from exc
 
 
 def write_result(
@@ -713,15 +551,46 @@ def write_result(
     status: str,
     shot_paths: Sequence[str] | None = None,
 ) -> None:
-    excel_reporter.write_result(test_case_id, actual, status, shot_paths=shot_paths)
+    excel_path, sheet_name = _active_excel_and_sheet()
+    wb = openpyxl.load_workbook(excel_path)
+    ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+    row, columns = _find_row_and_columns(ws, test_case_id)
+    if row is None:
+        print(f"[!] Warning: Row for {test_case_id} not found in sheet '{ws.title}'")
+        return
+
+    shot_file = _resolve_latest_screenshot(test_case_id, shot_paths)
+    target_link = os.path.abspath(shot_file) if shot_file else EVIDENCE_LINK
+    display_text = os.path.basename(shot_file) if shot_file else "Evidence Doc"
+
+    values = {
+        "actual": actual,
+        "status": status,
+        "evidence": display_text,
+        "date": datetime.now().strftime("%d-%b-%Y"),
+        "tester": os.getenv("TESTER_NAME") or TESTER_NAME,
+    }
+    for key, col in columns.items():
+        if col:
+            ws.cell(row, col).value = values[key]
+
+    if columns["evidence"] and target_link:
+        cell = ws.cell(row, columns["evidence"])
+        cell.value = display_text
+        cell.hyperlink = target_link
+        cell.style = "Hyperlink"
+
+    wb.save(excel_path)
+    print(f"Saved to: {os.path.abspath(excel_path)}  (sheet '{ws.title}', row {row})")
 
 
+# ---------------------------------------------------------------------------
+# 6. Unified POM Test Runner (Used by repXXX_*.py scripts)
+# ---------------------------------------------------------------------------
 def _parse_docstring(doc: str | None, fallback_title: str) -> tuple[str, str]:
-    """Extract (feature_title, full_description) from the test script's docstring."""
     lines = [line.strip() for line in (doc or "").strip().splitlines() if line.strip()]
     if not lines:
         return fallback_title, fallback_title
-    # If line 0 is TEST_CASE_ID (like 'REP-TC001'), line 1 is the Feature Title
     if lines[0].upper().startswith("REP-TC") and ":" in lines[0]:
         title = lines[0].split(":", 1)[1].strip()
     elif len(lines) > 1 and lines[0].upper().startswith("REP-TC"):
@@ -738,10 +607,6 @@ def run_report_test(
     doc: str | None = None,
     feature: str | None = None,
 ) -> None:
-    """
-    Execute a single Report test script using ReportSession (POM + Allure + Excel).
-    `test_fn(session)` receives a ready `ReportSession` instance and returns the Actual Result text.
-    """
     os.chdir(PROJECT_ROOT)
     os.environ["SHEET_NAME"] = "Report"
 
@@ -749,8 +614,9 @@ def run_report_test(
     feature_name = feature or title
 
     reporter = create_allure_reporter()
-    report_url = f"{BASE_URL}{route}"
-    reporter.start_test(test_case_id, title, feature_name, description, report_url)
+    reporter.start_test(
+        test_case_id, title, feature_name, description, f"{BASE_URL}{route}"
+    )
 
     driver = None
     wait = None
@@ -761,16 +627,19 @@ def run_report_test(
     error: BaseException | None = None
 
     try:
-        check_excel_ready(test_case_id)
-        driver, wait = start_browser()
-        session = ReportSession(driver, wait, reporter)
+        with reporter.step(f"Validate Excel worksheet row for {test_case_id}"):
+            check_excel_ready(test_case_id)
 
+        with reporter.step("Launch Chrome WebDriver"):
+            driver, wait = start_browser()
+
+        session = ReportSession(driver, wait, reporter)
         actual = test_fn(session)
         status = "passed"
         excel_status = "Pass"
 
         with reporter.step("Capture passing screenshot evidence"):
-            shot_paths.append(save_shot(driver, test_case_id, "report", "PASS"))
+            shot_paths.append(save_shot(driver, test_case_id, "report", "PASS", reporter))
 
     except (ReportConfigError, BlockedTest) as exc:
         error = exc
@@ -779,7 +648,9 @@ def run_report_test(
         actual = f"Blocked - {exc}"
         if driver:
             try:
-                shot_paths.append(save_shot(driver, test_case_id, "report", "BLOCKED"))
+                shot_paths.append(
+                    save_shot(driver, test_case_id, "report", "BLOCKED", reporter)
+                )
             except Exception:
                 pass
         reporter.attach_text(actual, "Execution prerequisite")
@@ -791,10 +662,12 @@ def run_report_test(
         excel_status = "Fail"
         if driver:
             try:
-                shot_paths.append(save_shot(driver, test_case_id, "setup", "FAIL"))
+                shot_paths.append(
+                    save_shot(driver, test_case_id, "setup", "FAIL", reporter)
+                )
             except Exception:
                 pass
-        attach_failure_diagnostics(driver, traceback.format_exc())
+        attach_failure_diagnostics(driver, traceback.format_exc(), reporter)
 
     except Exception as exc:
         error = exc
@@ -803,10 +676,12 @@ def run_report_test(
         excel_status = "Fail"
         if driver:
             try:
-                shot_paths.append(save_shot(driver, test_case_id, "report", "FAIL"))
+                shot_paths.append(
+                    save_shot(driver, test_case_id, "report", "FAIL", reporter)
+                )
             except Exception:
                 pass
-        attach_failure_diagnostics(driver, traceback.format_exc())
+        attach_failure_diagnostics(driver, traceback.format_exc(), reporter)
 
     finally:
         if driver:
@@ -815,7 +690,8 @@ def run_report_test(
             except Exception:
                 pass
         try:
-            write_result(test_case_id, actual, excel_status, shot_paths=shot_paths)
+            with reporter.step(f"Write '{excel_status}' result to Excel"):
+                write_result(test_case_id, actual, excel_status, shot_paths=shot_paths)
         except Exception as excel_error:
             reporter.attach_text(
                 f"Excel update failed: {excel_error}\n{traceback.format_exc()}",
@@ -826,7 +702,6 @@ def run_report_test(
                 actual += f" | Excel reporting failed: {excel_error}"
 
         reporter.finish(status, actual, error)
-        set_active_reporter(None)
 
     print(f"\n{test_case_id}: {excel_status} - {actual}")
     if status in ("failed", "broken"):
