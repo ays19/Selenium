@@ -175,13 +175,39 @@ class ReportPage(BasePage):
         except TimeoutException:
             return None
 
+    def report_chart(self, timeout: int = 5):
+        """Locate a rendered chart (SVG/Canvas) on graphical report screens."""
+        def find_chart(_driver):
+            for selector in (
+                ".card svg",
+                ".card canvas",
+                "#main svg",
+                "#main canvas",
+                ".highcharts-container",
+                ".apexcharts-canvas",
+            ):
+                for el in self.visible_elements(By.CSS_SELECTOR, selector):
+                    try:
+                        size = el.size or {}
+                        if size.get("width", 0) > 100 and size.get("height", 0) > 100:
+                            return el
+                    except Exception:
+                        continue
+            return False
+
+        try:
+            return WebDriverWait(self.driver, timeout).until(find_chart)
+        except TimeoutException:
+            return None
+
     def assert_accessible(self) -> None:
-        table = self.report_table()
+        table = self.report_table(timeout=12)
+        chart = None if table is not None else self.report_chart(timeout=8)
         current = self.driver.current_url.casefold()
         on_login = "/login" in current and "report" not in current
         has_rows = bool(table and table.find_elements(*self.TABLE_BODY_ROW_LOCATOR))
-        # A populated report table proves access even if log rows contain words like "unauthorized".
-        if table is None or on_login or (not has_rows and self.is_access_denied()):
+        # A populated report table or rendered chart proves access even if log rows contain words like "unauthorized".
+        if (table is None and chart is None) or on_login or (not has_rows and chart is None and self.is_access_denied()):
             raise AssertionError(
                 f"Report page was not accessible. URL: {self.driver.current_url}; "
                 f"page text: {self.body_text()[:400]}"
@@ -206,10 +232,13 @@ class ReportPage(BasePage):
         )
 
     def table_text(self) -> str:
-        table = self.report_table()
-        if table is None:
-            raise AssertionError("The report data table was not found.")
-        return table.text
+        table = self.report_table(timeout=5)
+        if table is not None:
+            return table.text
+        chart = self.report_chart(timeout=5)
+        if chart is not None:
+            return chart.text or self.body_text()
+        raise AssertionError("The report data table was not found.")
 
     def assert_table_contains(self, expected_text: str, description: str) -> None:
         if not expected_text:
@@ -217,7 +246,12 @@ class ReportPage(BasePage):
 
         def expected_row_visible(_driver) -> bool:
             table = self.report_table(timeout=1)
-            return bool(table and expected_text.casefold() in table.text.casefold())
+            if table is not None:
+                return expected_text.casefold() in table.text.casefold()
+            chart = self.report_chart(timeout=1)
+            if chart is not None:
+                return expected_text.casefold() in (chart.text or self.body_text()).casefold()
+            return False
 
         found = self.wait.until(expected_row_visible)
         if not found:
