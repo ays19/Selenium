@@ -1,10 +1,12 @@
 """Page Object for the Robo2mation Core, DMS and Workflow report screens."""
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
 from .base_page import BasePage
@@ -31,6 +33,11 @@ class ReportPage(BasePage):
         "input.search_in_table",
         "input[placeholder='Type and press enter']",
     )
+    FILTER_TOGGLE_LOCATOR = (By.CSS_SELECTOR, "#filterToggle a, #filterToggle")
+    DATERANGE_INPUT_LOCATOR = (By.CSS_SELECTOR, "input[name='daterange'], input.date_input")
+    DATERANGE_START_LOCATOR = (By.CSS_SELECTOR, ".daterangepicker input[name='daterangepicker_start']")
+    DATERANGE_END_LOCATOR = (By.CSS_SELECTOR, ".daterangepicker input[name='daterangepicker_end']")
+    DATERANGE_APPLY_LOCATOR = (By.CSS_SELECTOR, ".daterangepicker .applyBtn")
     PAGE_SIZE_SELECTORS = (
         ".dataTables_length select",
         "select[name$='_length']",
@@ -153,6 +160,46 @@ class ReportPage(BasePage):
 
         self.assert_table_contains(expected_text, "filtered result")
 
+    @staticmethod
+    def _parse_date(raw: str) -> datetime | None:
+        for fmt in ("%d-%m-%y", "%d-%m-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(raw.strip(), fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _format_for_picker(self, raw: str, sample_value: str) -> str:
+        parsed = self._parse_date(raw)
+        if parsed is None:
+            return raw
+        sample = (sample_value or "").strip()
+        if "/" in sample:
+            # Bootstrap daterangepicker defaults to MM/DD/YYYY unless configured DD/MM/YYYY
+            return parsed.strftime("%m/%d/%Y")
+        if "-" in sample:
+            parts = sample.split("-")
+            if len(parts[0]) == 4:
+                return parsed.strftime("%Y-%m-%d")
+            return parsed.strftime("%d-%m-%Y" if len(parts[-1]) == 4 else "%d-%m-%y")
+        return raw
+
+    def _apply_daterangepicker(self, picker_input, date_from: str, date_to: str) -> None:
+        self.click(picker_input)
+        start_el = self.wait.until(EC.visibility_of_element_located(self.DATERANGE_START_LOCATOR))
+        end_el = self.wait.until(EC.visibility_of_element_located(self.DATERANGE_END_LOCATOR))
+        sample = start_el.get_attribute("value") or ""
+        start_str = self._format_for_picker(date_from, sample)
+        end_str = self._format_for_picker(date_to, sample)
+        self.set_value(start_el, start_str)
+        self.set_value(end_el, end_str)
+        end_el.send_keys(Keys.TAB)
+        apply_btns = self.visible_elements(*self.DATERANGE_APPLY_LOCATOR)
+        if apply_btns:
+            self.click(apply_btns[0])
+        else:
+            end_el.send_keys(Keys.ENTER)
+
     def apply_date_range(
         self,
         date_from: str,
@@ -165,16 +212,38 @@ class ReportPage(BasePage):
             raise LookupError("Date range values (from/to) are required.")
         if not expected_text:
             raise LookupError("Expected date-filtered result text is empty.")
+
         from_fields = self.visible_elements(By.CSS_SELECTOR, from_selector)
         to_fields = self.visible_elements(By.CSS_SELECTOR, to_selector)
-        if not from_fields or not to_fields:
-            raise LookupError(
-                "Date range fields were not found. Configure REPORT_DATE_FROM_SELECTOR and "
-                "REPORT_DATE_TO_SELECTOR in report/.env.report."
-            )
-        self.set_value(from_fields[0], date_from)
-        self.set_value(to_fields[0], date_to)
-        self.apply_form(to_fields[0])
+        if from_fields and to_fields:
+            self.set_value(from_fields[0], date_from)
+            self.set_value(to_fields[0], date_to)
+            self.apply_form(to_fields[0])
+        else:
+            picker_inputs = self.visible_elements(*self.DATERANGE_INPUT_LOCATOR)
+            if not picker_inputs:
+                toggles = self.visible_elements(*self.FILTER_TOGGLE_LOCATOR)
+                if toggles:
+                    self.click(toggles[0])
+                    self.wait.until(
+                        lambda _d: self.visible_elements(*self.DATERANGE_INPUT_LOCATOR)
+                        or self.visible_elements(By.CSS_SELECTOR, from_selector)
+                    )
+            from_fields = self.visible_elements(By.CSS_SELECTOR, from_selector)
+            to_fields = self.visible_elements(By.CSS_SELECTOR, to_selector)
+            picker_inputs = self.visible_elements(*self.DATERANGE_INPUT_LOCATOR)
+            if from_fields and to_fields:
+                self.set_value(from_fields[0], date_from)
+                self.set_value(to_fields[0], date_to)
+                self.apply_form(to_fields[0])
+            elif picker_inputs:
+                self._apply_daterangepicker(picker_inputs[0], date_from, date_to)
+            else:
+                raise LookupError(
+                    "Date range fields were not found. Configure REPORT_DATE_FROM_SELECTOR and "
+                    "REPORT_DATE_TO_SELECTOR in report/.env.report."
+                )
+
         self.wait_for_ajax_idle()
         self.assert_table_contains(expected_text, "date-filtered result")
 
