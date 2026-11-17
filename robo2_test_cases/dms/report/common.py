@@ -1,81 +1,67 @@
-
+"""
+Industry-standard POM + Allure + Excel foundation for the Robo2mation Report suite.
+- Pure Python, Selenium WebDriver, OpenPyXL, and allure-python-commons (no pytest).
+- Provides:
+    * LoginPage(BasePage): POM authentication and session switching
+    * ReportSession: High-level POM + Allure facade for concise, readable test scripts
+    * BrowserManager, EvidenceManager, ExcelReporter
+    * run_report_test(): Standardized test runner (parses docstring, runs POM, updates Excel & Allure)
+"""
 from __future__ import annotations
 
 from contextlib import nullcontext
 from datetime import datetime
 import os
 from pathlib import Path
+import sys
 import traceback
-from typing import Sequence
+from typing import Callable, Sequence
 
-from allure_commons.types import AttachmentType
-from allure_commons.utils import uuid4
-from dotenv import load_dotenv
-import openpyxl
-from selenium import webdriver
-from selenium.common.exceptions import (
+# Ensure both `dms/` and `dms/report/` are importable regardless of working directory
+REPORT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = REPORT_DIR.parent
+for _p in (str(REPORT_DIR), str(PROJECT_ROOT)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from allure_commons.types import AttachmentType  # noqa: E402
+from allure_commons.utils import uuid4  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
+import openpyxl  # noqa: E402
+from selenium import webdriver  # noqa: E402
+from selenium.common.exceptions import (  # noqa: E402
     NoSuchElementException,
     StaleElementReferenceException,
     TimeoutException,
 )
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.remote.webdriver import WebDriver
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.chrome.options import Options  # noqa: E402
+from selenium.webdriver.common.by import By  # noqa: E402
+from selenium.webdriver.common.keys import Keys  # noqa: E402
+from selenium.webdriver.remote.webdriver import WebDriver  # noqa: E402
+from selenium.webdriver.support import expected_conditions as EC  # noqa: E402
+from selenium.webdriver.support.ui import WebDriverWait  # noqa: E402
 
-from report.allure_reporter import AllureReporter
-from report.pages.base_page import BasePage
+from report.allure_reporter import AllureReporter  # noqa: E402
+from report.pages.base_page import BasePage  # noqa: E402
+from report.pages.report_page import ReportPage  # noqa: E402
+from report.pages.requested_downloads_page import RequestedDownloadsPage  # noqa: E402
+from report.report_config import (  # noqa: E402
+    ReportConfigError,
+    expected_value,
+    filter_values,
+    get_profile,
+)
 
+
+# ---------------------------------------------------------------------------
 # 1. Environment & Directory Configuration
-
-REPORT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = REPORT_DIR.parent
-REPORT_ENV_FILE = REPORT_DIR / ".env.report"
-
+# ---------------------------------------------------------------------------
 load_dotenv(PROJECT_ROOT / ".env", override=False)
-load_dotenv(REPORT_ENV_FILE, override=False)
+load_dotenv(REPORT_DIR / ".env.report", override=False)
 
 BASE_URL: str = (os.getenv("BASE_URL") or "").rstrip("/")
-
-# Report suite credentials from .env.report (fall back to root .env DMS_* only when REPORT_USERNAME is unset)
-REPORT_USERNAME: str = os.getenv("REPORT_USERNAME", "").strip()
-REPORT_PASSWORD: str = os.getenv("REPORT_PASSWORD", "")
-if REPORT_USERNAME:
-    USERNAME: str = REPORT_USERNAME
-    PASSWORD: str = REPORT_PASSWORD
-else:
-    USERNAME = os.getenv("DMS_USERNAME", "").strip()
-    PASSWORD = os.getenv("DMS_PASSWORD", "")
-
-REPORT_PROFILE_CORE_REPORT_MANAGER_USERNAME: str = os.getenv("REPORT_PROFILE_CORE_REPORT_MANAGER_USERNAME", "").strip()
-REPORT_PROFILE_CORE_REPORT_MANAGER_PASSWORD: str = os.getenv("REPORT_PROFILE_CORE_REPORT_MANAGER_PASSWORD", "")
-REPORT_PROFILE_DMS_USER_USERNAME: str = os.getenv("REPORT_PROFILE_DMS_USER_USERNAME", "").strip()
-REPORT_PROFILE_DMS_USER_PASSWORD: str = os.getenv("REPORT_PROFILE_DMS_USER_PASSWORD", "")
-REPORT_PROFILE_DMS_REPORT_MANAGER_USERNAME: str = os.getenv("REPORT_PROFILE_DMS_REPORT_MANAGER_USERNAME", "").strip()
-REPORT_PROFILE_DMS_REPORT_MANAGER_PASSWORD: str = os.getenv("REPORT_PROFILE_DMS_REPORT_MANAGER_PASSWORD", "")
-
-# Expected test data & filters from .env.report
-REPORT_EXPECTED_OWN_TEXT: str = os.getenv("REPORT_EXPECTED_OWN_TEXT", "").strip()
-REPORT_EXPECTED_OTHER_TEXT: str = os.getenv("REPORT_EXPECTED_OTHER_TEXT", "").strip()
-REPORT_EXPECTED_RELATED_TEXT: str = os.getenv("REPORT_EXPECTED_RELATED_TEXT", "").strip()
-REPORT_EXPECTED_DEPARTMENT_TEXT: str = os.getenv("REPORT_EXPECTED_DEPARTMENT_TEXT", "").strip()
-REPORT_EXPECTED_FILTER_TEXT: str = os.getenv("REPORT_EXPECTED_FILTER_TEXT", "").strip()
-REPORT_EXPECTED_DATE_TEXT: str = os.getenv("REPORT_EXPECTED_DATE_TEXT", "").strip()
-REPORT_EXPECTED_DOWNLOAD_TEXT: str = os.getenv("REPORT_EXPECTED_DOWNLOAD_TEXT", "").strip()
-REPORT_DATE_FROM: str = os.getenv("REPORT_DATE_FROM", "").strip()
-REPORT_DATE_TO: str = os.getenv("REPORT_DATE_TO", "").strip()
-REPORT_FILTER_USERS_NAME: str = os.getenv("REPORT_FILTER_USERS_NAME", "").strip()
-REPORT_FILTER_IP_ADDRESS: str = os.getenv("REPORT_FILTER_IP_ADDRESS", "").strip()
-
-# Optional report overrides from .env.report
-REPORT_DIRECT_EXPORT_ACTION: str = os.getenv("REPORT_DIRECT_EXPORT_ACTION", "CSV").strip() or "CSV"
-REPORT_TABLE_SELECTOR: str = os.getenv("REPORT_TABLE_SELECTOR", "").strip()
-REPORT_DATE_FROM_SELECTOR: str = os.getenv("REPORT_DATE_FROM_SELECTOR", "input[type='date']:first-of-type").strip()
-REPORT_DATE_TO_SELECTOR: str = os.getenv("REPORT_DATE_TO_SELECTOR", "input[type='date']:last-of-type").strip()
-REPORT_ALLURE_RESULTS_DIR: str = os.getenv("REPORT_ALLURE_RESULTS_DIR", "allure-results").strip() or "allure-results"
-
+USERNAME: str = os.getenv("REPORT_USERNAME") or os.getenv("DMS_USERNAME") or ""
+PASSWORD: str = os.getenv("REPORT_PASSWORD") or os.getenv("DMS_PASSWORD") or ""
 TESTER_NAME: str = os.getenv("TESTER_NAME") or ""
 SHEET_NAME: str = os.getenv("SHEET_NAME", "Report")
 EXCEL_PATH: str = os.getenv("EXCEL_PATH") or ""
@@ -102,12 +88,15 @@ class SetupError(RuntimeError):
     """Raised when login, browser initialization, or test setup fails."""
 
 
+class BlockedTest(RuntimeError):
+    """Raised when required role credentials or sentinel test data are missing in .env.report."""
+
+
 # Active AllureReporter context so POM classes and helpers can log steps/attachments
 _ACTIVE_REPORTER: AllureReporter | None = None
 
 
 def set_active_reporter(reporter: AllureReporter | None) -> None:
-    """Bind the current test's AllureReporter instance to common.py."""
     global _ACTIVE_REPORTER
     _ACTIVE_REPORTER = reporter
 
@@ -123,8 +112,9 @@ def allure_step(title: str):
     return nullcontext()
 
 
+# ---------------------------------------------------------------------------
 # 2. Page Object Model: LoginPage (with Allure Step Integration)
-
+# ---------------------------------------------------------------------------
 class LoginPage(BasePage):
     """Page Object encapsulating Robo2mation authentication and session management."""
 
@@ -228,8 +218,183 @@ class LoginPage(BasePage):
             self.login_as(username, password)
 
 
-# 3. WebDriver Factory (BrowserManager)
+# ---------------------------------------------------------------------------
+# 3. High-Level POM + Allure Session Facade (Keeps Test Scripts Ultra-Clean)
+# ---------------------------------------------------------------------------
+class ReportSession:
+    """
+    Combines LoginPage, ReportPage, RequestedDownloadsPage, and AllureReporter
+    into one cohesive POM interface so each repXXX_*.py test script is concise,
+    self-documenting, and reusable.
+    """
 
+    def __init__(self, driver: WebDriver, wait: WebDriverWait, reporter: AllureReporter):
+        self.driver = driver
+        self.wait = wait
+        self.reporter = reporter
+        self.login_page = LoginPage(driver, wait, BASE_URL, reporter)
+        self.report_page = ReportPage(driver, wait)
+        self.downloads_page = RequestedDownloadsPage(driver, wait)
+        self._logged_in = False
+        self.current_role = ""
+
+    def step(self, title: str):
+        return self.reporter.step(title)
+
+    def login_as_role(self, role_key: str) -> str:
+        """Sign in (or switch session) using a role key from report/.env.report."""
+        profile = get_profile(role_key)
+        if self._logged_in:
+            self.login_page.switch_user(profile.username, profile.password)
+        else:
+            self.login_page.login_as(profile.username, profile.password)
+            self._logged_in = True
+        self.current_role = role_key
+        return profile.username
+
+    def open_report(self, route: str, check_accessible: bool = True) -> None:
+        """Navigate to the report route and optionally verify the table is accessible."""
+        with self.step(f"Open report page ({route})"):
+            self.report_page.open(BASE_URL, route)
+            if check_accessible:
+                self.report_page.assert_accessible()
+
+    def verify_scope(self, visibility: str, role_key: str = "") -> str:
+        """
+        Verify role-based data visibility ('own', 'all', 'related', 'department', 'denied', 'accessible').
+        """
+        role = (role_key or self.current_role).upper()
+        with self.step(f"Verify report visibility scope: '{visibility}'"):
+            if visibility == "denied":
+                self.report_page.assert_denied()
+                return f"Role '{role.lower()}': access denied as expected."
+
+            self.report_page.assert_accessible()
+            if visibility == "accessible":
+                return f"Role '{role.lower()}': report is accessible and table loaded."
+
+            key_map = {
+                "own": "REPORT_EXPECTED_OWN_TEXT",
+                "all": "REPORT_EXPECTED_OTHER_TEXT",
+                "related": "REPORT_EXPECTED_RELATED_TEXT",
+                "department": "REPORT_EXPECTED_DEPARTMENT_TEXT",
+            }
+            base_key = key_map.get(visibility)
+            if not base_key:
+                return f"Role '{role.lower()}': report access verified."
+
+            expected = expected_value(f"{base_key}_{role}") or expected_value(base_key)
+            if not expected:
+                raise BlockedTest(
+                    f"Set {base_key}_{role} (or {base_key}) in report/.env.report to verify '{visibility}' scope."
+                )
+
+            self.report_page.assert_table_contains(expected, f"{visibility}-scope record")
+
+            if visibility == "own":
+                other = (
+                    expected_value(f"REPORT_EXPECTED_OTHER_TEXT_{role}")
+                    or expected_value("REPORT_EXPECTED_OTHER_TEXT")
+                )
+                if not other:
+                    raise BlockedTest(
+                        f"Set REPORT_EXPECTED_OTHER_TEXT in report/.env.report to verify restricted rows."
+                    )
+                self.report_page.assert_table_not_contains(other, "another user's record")
+                return f"Role '{role.lower()}': sees own record ('{expected}') and cannot see '{other}'."
+
+            return f"Role '{role.lower()}': verified '{visibility}' record ('{expected}')."
+
+    def search_or_filter(self, labels: list[str], expected_key: str = "REPORT_EXPECTED_FILTER_TEXT") -> str:
+        """Apply search or filter fields and verify expected result row."""
+        with self.step(f"Search/Filter report by: {', '.join(labels)}"):
+            self.report_page.apply_label_filters(
+                labels=labels,
+                values=filter_values(),
+                expected_text=expected_value(expected_key),
+            )
+        return f"Searched/Filtered by {', '.join(labels)} and verified matching rows."
+
+    def filter_by_date(self, expected_key: str = "REPORT_EXPECTED_DATE_TEXT") -> str:
+        """Apply configured date range from .env.report and verify matching row."""
+        date_from = expected_value("REPORT_DATE_FROM")
+        date_to = expected_value("REPORT_DATE_TO")
+        expected_row = expected_value(expected_key)
+        if not date_from or not date_to or not expected_row:
+            raise BlockedTest(
+                "Set REPORT_DATE_FROM, REPORT_DATE_TO, and REPORT_EXPECTED_DATE_TEXT in report/.env.report."
+            )
+        with self.step(f"Filter by date range ({date_from} to {date_to})"):
+            self.report_page.apply_date_range(date_from, date_to, expected_row)
+        return f"Applied date range ({date_from} to {date_to}) and verified '{expected_row}'."
+
+    def sort_by(self, columns: list[str]) -> str:
+        """Sort report table by each column in `columns`."""
+        with self.step(f"Sort report columns: {', '.join(columns)}"):
+            self.report_page.sort_columns(columns)
+        return f"Verified sorting on columns: {', '.join(columns)}."
+
+    def export(
+        self,
+        actions: list[str],
+        page_sizes: Sequence[str] = (),
+        requested_download: bool = False,
+    ) -> str:
+        """Execute Copy/CSV/Excel/Print export controls and optionally verify Requested Downloads."""
+        download_dir = Path(DOWNLOAD_DIR)
+        if page_sizes:
+            with self.step(f"Test page sizes: {', '.join(page_sizes)}"):
+                for size in page_sizes:
+                    self.report_page.choose_page_size(size.strip())
+
+        downloaded: list[Path] = []
+        with self.step(f"Execute export actions: {', '.join(actions)}"):
+            for action in actions:
+                before = {p.name for p in download_dir.glob("*") if p.is_file()}
+                if action.casefold() == "print":
+                    self.driver.execute_script(
+                        "window.__reportPrintCalled=false; "
+                        "window.print=function(){window.__reportPrintCalled=true;};"
+                    )
+                self.report_page.click_action(action)
+                if action.casefold() in {"csv", "excel"}:
+                    ext = ".csv" if action.casefold() == "csv" else ".xlsx"
+                    try:
+                        downloaded.append(
+                            self.report_page.wait_for_download(
+                                download_dir,
+                                before,
+                                ext,
+                                timeout=12 if requested_download else 30,
+                            )
+                        )
+                    except TimeoutError:
+                        if not requested_download:
+                            raise
+                elif action.casefold() == "print":
+                    self.wait.until(
+                        lambda d: bool(
+                            d.execute_script("return window.__reportPrintCalled === true")
+                        )
+                    )
+                elif action.casefold() == "copy":
+                    self.report_page.assert_accessible()
+
+        if requested_download:
+            with self.step("Verify entry in Requested Downloads page"):
+                self.downloads_page.open(REQUESTED_DOWNLOAD_URL)
+                self.downloads_page.assert_download_request_visible(
+                    expected_value("REPORT_EXPECTED_DOWNLOAD_TEXT")
+                )
+
+        files_info = f" Downloaded: {', '.join(p.name for p in downloaded)}." if downloaded else ""
+        req_info = " Verified in Requested Downloads." if requested_download else ""
+        return f"Completed export actions ({', '.join(actions)}).{files_info}{req_info}"
+
+
+# ---------------------------------------------------------------------------
+# 4. WebDriver Factory (BrowserManager)
+# ---------------------------------------------------------------------------
 class BrowserManager:
     """Creates and configures a Chrome WebDriver instance for Report tests."""
 
@@ -261,8 +426,9 @@ class BrowserManager:
             return driver, wait
 
 
-# 4. Screenshot & Allure Evidence Manager
-
+# ---------------------------------------------------------------------------
+# 5. Screenshot & Allure Evidence Manager (No debug/ disk clutter)
+# ---------------------------------------------------------------------------
 class EvidenceManager:
     """Saves screenshots for Excel hyperlinks and attaches evidence directly to Allure."""
 
@@ -339,8 +505,9 @@ class EvidenceManager:
         return fail_shots[-1] if fail_shots else valid[-1]
 
 
-# 5. Excel Reporter (with Allure Step Integration & Screenshot Hyperlinking)
-
+# ---------------------------------------------------------------------------
+# 6. Excel Reporter (with Allure Step Integration & Screenshot Hyperlinking)
+# ---------------------------------------------------------------------------
 class ExcelReporter:
     """Validates and updates the Report sheet in the Excel workbook with screenshot links."""
 
@@ -470,21 +637,21 @@ class ExcelReporter:
                 f"Saved to: {os.path.abspath(excel_path)}  (sheet '{ws.title}', row {row})"
             )
 
-# 6. Singleton Instances & Clean Public Facade
 
+# ---------------------------------------------------------------------------
+# 7. Public Facade & Unified POM Test Runner
+# ---------------------------------------------------------------------------
 evidence_manager = EvidenceManager()
 excel_reporter = ExcelReporter(evidence_manager)
 
 
 def create_allure_reporter() -> AllureReporter:
-    """Instantiate an AllureReporter for the configured allure-results directory."""
     reporter = AllureReporter(ALLURE_RESULTS_DIR)
     set_active_reporter(reporter)
     return reporter
 
 
 def short(error: BaseException) -> str:
-    """Concise error summary including call location when exception text is empty."""
     lines = str(error).splitlines()
     first = lines[0].strip()[:140] if lines else ""
     if not first:
@@ -493,7 +660,7 @@ def short(error: BaseException) -> str:
                 f
                 for f in traceback.extract_tb(error.__traceback__)
                 if "site-packages" not in f.filename
-                and f.name not in ("run_report_case", "<module>", "<lambda>")
+                and f.name not in ("run_report_case", "run_report_test", "<module>", "<lambda>")
             ]
             if frames:
                 chain = " > ".join(f.name for f in frames)
@@ -507,9 +674,7 @@ def start_browser() -> tuple[WebDriver, WebDriverWait]:
     return BrowserManager.create_driver()
 
 
-def login_as(
-    driver: WebDriver, wait: WebDriverWait, username: str, password: str
-) -> None:
+def login_as(driver: WebDriver, wait: WebDriverWait, username: str, password: str) -> None:
     LoginPage(driver, wait).login_as(username, password)
 
 
@@ -545,3 +710,122 @@ def write_result(
     shot_paths: Sequence[str] | None = None,
 ) -> None:
     excel_reporter.write_result(test_case_id, actual, status, shot_paths=shot_paths)
+
+
+def _parse_docstring(doc: str | None, fallback_title: str) -> tuple[str, str]:
+    """Extract (feature_title, full_description) from the test script's docstring."""
+    lines = [line.strip() for line in (doc or "").strip().splitlines() if line.strip()]
+    if not lines:
+        return fallback_title, fallback_title
+    # If line 0 is TEST_CASE_ID (like 'REP-TC001'), line 1 is the Feature Title
+    if lines[0].upper().startswith("REP-TC") and ":" in lines[0]:
+        title = lines[0].split(":", 1)[1].strip()
+    elif len(lines) > 1 and lines[0].upper().startswith("REP-TC"):
+        title = lines[1]
+    else:
+        title = lines[0]
+    return title, "\n".join(lines)
+
+
+def run_report_test(
+    test_case_id: str,
+    route: str,
+    test_fn: Callable[[ReportSession], str],
+    doc: str | None = None,
+    feature: str | None = None,
+) -> None:
+    """
+    Execute a single Report test script using ReportSession (POM + Allure + Excel).
+    `test_fn(session)` receives a ready `ReportSession` instance and returns the Actual Result text.
+    """
+    os.chdir(PROJECT_ROOT)
+    os.environ["SHEET_NAME"] = "Report"
+
+    title, description = _parse_docstring(doc or test_fn.__doc__, test_case_id)
+    feature_name = feature or title
+
+    reporter = create_allure_reporter()
+    report_url = f"{BASE_URL}{route}"
+    reporter.start_test(test_case_id, title, feature_name, description, report_url)
+
+    driver = None
+    wait = None
+    status = "failed"
+    excel_status = "Fail"
+    actual = ""
+    shot_paths: list[str] = []
+    error: BaseException | None = None
+
+    try:
+        check_excel_ready(test_case_id)
+        driver, wait = start_browser()
+        session = ReportSession(driver, wait, reporter)
+
+        actual = test_fn(session)
+        status = "passed"
+        excel_status = "Pass"
+
+        with reporter.step("Capture passing screenshot evidence"):
+            shot_paths.append(save_shot(driver, test_case_id, "report", "PASS"))
+
+    except (ReportConfigError, BlockedTest) as exc:
+        error = exc
+        status = "skipped"
+        excel_status = "Blocked"
+        actual = f"Blocked - {exc}"
+        if driver:
+            try:
+                shot_paths.append(save_shot(driver, test_case_id, "report", "BLOCKED"))
+            except Exception:
+                pass
+        reporter.attach_text(actual, "Execution prerequisite")
+
+    except (SystemExit, SetupError) as exc:
+        error = exc
+        actual = f"Setup failed - {short(exc)}"
+        status = "broken"
+        excel_status = "Fail"
+        if driver:
+            try:
+                shot_paths.append(save_shot(driver, test_case_id, "setup", "FAIL"))
+            except Exception:
+                pass
+        attach_failure_diagnostics(driver, traceback.format_exc())
+
+    except Exception as exc:
+        error = exc
+        actual = short(exc)
+        status = "failed" if isinstance(exc, AssertionError) else "broken"
+        excel_status = "Fail"
+        if driver:
+            try:
+                shot_paths.append(save_shot(driver, test_case_id, "report", "FAIL"))
+            except Exception:
+                pass
+        attach_failure_diagnostics(driver, traceback.format_exc())
+
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+        try:
+            write_result(test_case_id, actual, excel_status, shot_paths=shot_paths)
+        except Exception as excel_error:
+            reporter.attach_text(
+                f"Excel update failed: {excel_error}\n{traceback.format_exc()}",
+                "Excel reporting error",
+            )
+            if status == "passed":
+                status = "broken"
+                actual += f" | Excel reporting failed: {excel_error}"
+
+        reporter.finish(status, actual, error)
+        set_active_reporter(None)
+
+    print(f"\n{test_case_id}: {excel_status} - {actual}")
+    if status in ("failed", "broken"):
+        raise SystemExit(1)
+    if status == "skipped":
+        raise SystemExit(2)
