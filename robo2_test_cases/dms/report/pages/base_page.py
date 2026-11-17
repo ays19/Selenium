@@ -10,6 +10,23 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 
 
 class BasePage:
+    """Base Selenium Page Object providing explicit-wait UI interactions."""
+
+    BODY_LOCATOR = (By.TAG_NAME, "body")
+    FIELD_CANDIDATES_LOCATOR = (
+        By.CSS_SELECTOR,
+        "input:not([type='hidden']), textarea, select, [role='combobox']",
+    )
+    LABEL_ELEMENTS_LOCATOR = (By.XPATH, "//label")
+    ACTION_BUTTONS_LOCATOR = (
+        By.CSS_SELECTOR,
+        "button, input[type='submit'], input[type='button'], a.btn, button.btn",
+    )
+    LOADING_INDICATORS_LOCATOR = (
+        By.CSS_SELECTOR,
+        ".dataTables_processing, .ant-spin-spinning, .loading-spinner",
+    )
+
     def __init__(self, driver, wait: WebDriverWait):
         self.driver = driver
         self.wait = wait
@@ -18,11 +35,24 @@ class BasePage:
     def normalize(value: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", (value or "").casefold()).strip()
 
+    def wait_for_page_load(self) -> None:
+        """Wait until the browser reports document.readyState == 'complete'."""
+        self.wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
+
+    def wait_for_ajax_idle(self, timeout: int = 5) -> None:
+        """Wait for visible DataTables/spinner loading indicators to finish."""
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                lambda _d: not self.visible_elements(*self.LOADING_INDICATORS_LOCATOR)
+            )
+        except TimeoutException:
+            pass
+
     def body_text(self) -> str:
         try:
-            return self.driver.find_element(By.TAG_NAME, "body").text
+            return self.driver.find_element(*self.BODY_LOCATOR).text
         except StaleElementReferenceException:
-            return self.driver.find_element(By.TAG_NAME, "body").text
+            return self.driver.find_element(*self.BODY_LOCATOR).text
 
     def visible_elements(self, by: By, selector: str):
         found = []
@@ -55,10 +85,7 @@ class BasePage:
 
     def find_labeled_field(self, label_text: str):
         wanted = self.normalize(label_text)
-        candidates = self.driver.find_elements(
-            By.CSS_SELECTOR,
-            "input:not([type='hidden']), textarea, select, [role='combobox']",
-        )
+        candidates = self.driver.find_elements(*self.FIELD_CANDIDATES_LOCATOR)
         ranked = []
         for element in candidates:
             try:
@@ -93,7 +120,7 @@ class BasePage:
             return ranked[0][1]
 
         # Fallback for common label + following input layouts.
-        labels = self.driver.find_elements(By.XPATH, "//label")
+        labels = self.driver.find_elements(*self.LABEL_ELEMENTS_LOCATOR)
         for label in labels:
             if wanted and wanted in self.normalize(label.text):
                 label_for = label.get_attribute("for")
@@ -108,10 +135,7 @@ class BasePage:
 
     def apply_form(self, fallback_field=None) -> None:
         action_words = {"search", "filter", "apply", "show", "submit", "generate"}
-        buttons = self.driver.find_elements(
-            By.CSS_SELECTOR,
-            "button, input[type='submit'], input[type='button'], a.btn, button.btn",
-        )
+        buttons = self.driver.find_elements(*self.ACTION_BUTTONS_LOCATOR)
         for button in buttons:
             try:
                 label = self.normalize(button.text or button.get_attribute("value") or button.get_attribute("aria-label") or "")

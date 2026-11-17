@@ -1,13 +1,11 @@
 """The 102 Report-sheet cases and their execution behaviour."""
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
 
-_DATA_FILE = Path(__file__).with_name("report_cases_source.json")
-with _DATA_FILE.open(encoding="utf-8") as source:
-    _SOURCE = {item["test_case_id"]: item for item in json.load(source)}
+from report.report_cases_data import REPORT_CASES
+
+_SOURCE = {item["test_case_id"]: item for item in REPORT_CASES}
 
 
 def _group(number: int):

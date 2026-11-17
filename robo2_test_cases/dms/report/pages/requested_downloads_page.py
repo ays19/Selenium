@@ -6,14 +6,19 @@ from .base_page import BasePage
 
 
 class RequestedDownloadsPage(BasePage):
+    """Page Object for the Requested Downloads queue screen."""
+
+    TABLE_ROWS_LOCATOR = (By.CSS_SELECTOR, "table tbody tr")
+    LINKS_LOCATOR = (By.CSS_SELECTOR, "a[href]")
+
     def open(self, url: str) -> None:
         self.driver.get(url)
-        self.wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
+        self.wait_for_page_load()
 
     def assert_download_request_visible(self, expected_text: str = "") -> None:
         body = self.body_text().casefold()
-        tables = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-        links = self.driver.find_elements(By.CSS_SELECTOR, "a[href]")
+        tables = self.driver.find_elements(*self.TABLE_ROWS_LOCATOR)
+        links = self.driver.find_elements(*self.LINKS_LOCATOR)
         has_download_link = any(
             link.is_displayed() and (
                 "download" in (link.text or "").casefold()

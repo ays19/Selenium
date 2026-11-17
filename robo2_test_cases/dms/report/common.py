@@ -32,13 +32,50 @@ from report.pages.base_page import BasePage
 
 REPORT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = REPORT_DIR.parent
+REPORT_ENV_FILE = REPORT_DIR / ".env.report"
 
 load_dotenv(PROJECT_ROOT / ".env", override=False)
-load_dotenv(REPORT_DIR / ".env.report", override=False)
+load_dotenv(REPORT_ENV_FILE, override=False)
 
 BASE_URL: str = (os.getenv("BASE_URL") or "").rstrip("/")
-USERNAME: str = os.getenv("REPORT_USERNAME") or os.getenv("DMS_USERNAME") or ""
-PASSWORD: str = os.getenv("REPORT_PASSWORD") or os.getenv("DMS_PASSWORD") or ""
+
+# Report suite credentials from .env.report (fall back to root .env DMS_* only when REPORT_USERNAME is unset)
+REPORT_USERNAME: str = os.getenv("REPORT_USERNAME", "").strip()
+REPORT_PASSWORD: str = os.getenv("REPORT_PASSWORD", "")
+if REPORT_USERNAME:
+    USERNAME: str = REPORT_USERNAME
+    PASSWORD: str = REPORT_PASSWORD
+else:
+    USERNAME = os.getenv("DMS_USERNAME", "").strip()
+    PASSWORD = os.getenv("DMS_PASSWORD", "")
+
+REPORT_PROFILE_CORE_REPORT_MANAGER_USERNAME: str = os.getenv("REPORT_PROFILE_CORE_REPORT_MANAGER_USERNAME", "").strip()
+REPORT_PROFILE_CORE_REPORT_MANAGER_PASSWORD: str = os.getenv("REPORT_PROFILE_CORE_REPORT_MANAGER_PASSWORD", "")
+REPORT_PROFILE_DMS_USER_USERNAME: str = os.getenv("REPORT_PROFILE_DMS_USER_USERNAME", "").strip()
+REPORT_PROFILE_DMS_USER_PASSWORD: str = os.getenv("REPORT_PROFILE_DMS_USER_PASSWORD", "")
+REPORT_PROFILE_DMS_REPORT_MANAGER_USERNAME: str = os.getenv("REPORT_PROFILE_DMS_REPORT_MANAGER_USERNAME", "").strip()
+REPORT_PROFILE_DMS_REPORT_MANAGER_PASSWORD: str = os.getenv("REPORT_PROFILE_DMS_REPORT_MANAGER_PASSWORD", "")
+
+# Expected test data & filters from .env.report
+REPORT_EXPECTED_OWN_TEXT: str = os.getenv("REPORT_EXPECTED_OWN_TEXT", "").strip()
+REPORT_EXPECTED_OTHER_TEXT: str = os.getenv("REPORT_EXPECTED_OTHER_TEXT", "").strip()
+REPORT_EXPECTED_RELATED_TEXT: str = os.getenv("REPORT_EXPECTED_RELATED_TEXT", "").strip()
+REPORT_EXPECTED_DEPARTMENT_TEXT: str = os.getenv("REPORT_EXPECTED_DEPARTMENT_TEXT", "").strip()
+REPORT_EXPECTED_FILTER_TEXT: str = os.getenv("REPORT_EXPECTED_FILTER_TEXT", "").strip()
+REPORT_EXPECTED_DATE_TEXT: str = os.getenv("REPORT_EXPECTED_DATE_TEXT", "").strip()
+REPORT_EXPECTED_DOWNLOAD_TEXT: str = os.getenv("REPORT_EXPECTED_DOWNLOAD_TEXT", "").strip()
+REPORT_DATE_FROM: str = os.getenv("REPORT_DATE_FROM", "").strip()
+REPORT_DATE_TO: str = os.getenv("REPORT_DATE_TO", "").strip()
+REPORT_FILTER_USERS_NAME: str = os.getenv("REPORT_FILTER_USERS_NAME", "").strip()
+REPORT_FILTER_IP_ADDRESS: str = os.getenv("REPORT_FILTER_IP_ADDRESS", "").strip()
+
+# Optional report overrides from .env.report
+REPORT_DIRECT_EXPORT_ACTION: str = os.getenv("REPORT_DIRECT_EXPORT_ACTION", "CSV").strip() or "CSV"
+REPORT_TABLE_SELECTOR: str = os.getenv("REPORT_TABLE_SELECTOR", "").strip()
+REPORT_DATE_FROM_SELECTOR: str = os.getenv("REPORT_DATE_FROM_SELECTOR", "input[type='date']:first-of-type").strip()
+REPORT_DATE_TO_SELECTOR: str = os.getenv("REPORT_DATE_TO_SELECTOR", "input[type='date']:last-of-type").strip()
+REPORT_ALLURE_RESULTS_DIR: str = os.getenv("REPORT_ALLURE_RESULTS_DIR", "allure-results").strip() or "allure-results"
+
 TESTER_NAME: str = os.getenv("TESTER_NAME") or ""
 SHEET_NAME: str = os.getenv("SHEET_NAME", "Report")
 EXCEL_PATH: str = os.getenv("EXCEL_PATH") or ""

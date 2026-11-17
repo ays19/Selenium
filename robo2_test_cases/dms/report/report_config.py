@@ -5,11 +5,10 @@ root dms/.env and shell environment taking priority when the same key is set the
 """
 from __future__ import annotations
 
-import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
 
@@ -56,15 +55,36 @@ def required_setting(name: str) -> str:
     return value
 
 
-def filter_values() -> dict[str, str]:
-    raw = os.getenv("REPORT_FILTER_VALUES_JSON", "{}").strip() or "{}"
-    try:
-        data: Any = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ReportConfigError(f"REPORT_FILTER_VALUES_JSON is invalid JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ReportConfigError("REPORT_FILTER_VALUES_JSON must be a JSON object of field labels and values.")
-    return {str(key): str(value) for key, value in data.items()}
+def _env_key_for_filter(label: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", label.strip()).strip("_").upper()
+    return f"REPORT_FILTER_{slug}"
+
+
+def filter_values(labels: list[str] | None = None) -> dict[str, str]:
+    """Read filter values from plain REPORT_FILTER_<LABEL> keys in .env.report."""
+    if not labels:
+        return {}
+    resolved: dict[str, str] = {}
+    for label in labels:
+        env_key = _env_key_for_filter(label)
+        value = os.getenv(env_key, "").strip()
+        if not value:
+            raise ReportConfigError(
+                f"Missing test value for filter '{label}'. Set {env_key} in {REPORT_ENV_FILE}."
+            )
+        resolved[label] = value
+    return resolved
+
+
+def table_selector() -> str:
+    return os.getenv("REPORT_TABLE_SELECTOR", "").strip()
+
+
+def date_selectors() -> tuple[str, str]:
+    return (
+        os.getenv("REPORT_DATE_FROM_SELECTOR", "input[type='date']:first-of-type").strip(),
+        os.getenv("REPORT_DATE_TO_SELECTOR", "input[type='date']:last-of-type").strip(),
+    )
 
 
 def expected_value(name: str) -> str:

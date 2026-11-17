@@ -27,9 +27,11 @@ from report.pages.requested_downloads_page import RequestedDownloadsPage  # noqa
 from report.report_cases import get_case  # noqa: E402
 from report.report_config import (  # noqa: E402
     ReportConfigError,
+    date_selectors,
     expected_value,
     filter_values,
     get_profile,
+    table_selector,
 )
 
 
@@ -147,19 +149,22 @@ def _run_operation(case: dict, page: ReportPage, driver, wait) -> str:
         return "Report access and visibility checks completed."
 
     if action in ("search", "filter"):
-        page.apply_label_filters(
-            case["filter_labels"],
-            filter_values(),
-            _case_setting("REPORT_EXPECTED_FILTER_TEXT", case),
-        )
+        expected = _case_setting("REPORT_EXPECTED_FILTER_TEXT", case)
+        if not expected:
+            raise ReportConfigError("Set REPORT_EXPECTED_FILTER_TEXT in report/.env.report before running this test.")
+        page.apply_label_filters(filter_values(case["filter_labels"]), expected)
         return f"Applied report filters: {', '.join(case['filter_labels'])}."
 
     if action == "date":
-        page.apply_date_range(
-            expected_value("REPORT_DATE_FROM"),
-            expected_value("REPORT_DATE_TO"),
-            _case_setting("REPORT_EXPECTED_DATE_TEXT", case),
-        )
+        date_from = expected_value("REPORT_DATE_FROM")
+        date_to = expected_value("REPORT_DATE_TO")
+        expected = _case_setting("REPORT_EXPECTED_DATE_TEXT", case)
+        if not date_from or not date_to:
+            raise ReportConfigError("Set REPORT_DATE_FROM and REPORT_DATE_TO in report/.env.report before running this test.")
+        if not expected:
+            raise ReportConfigError("Set REPORT_EXPECTED_DATE_TEXT in report/.env.report before running this test.")
+        from_sel, to_sel = date_selectors()
+        page.apply_date_range(date_from, date_to, expected, from_selector=from_sel, to_selector=to_sel)
         return "Applied the configured date range and verified a known row in the result."
 
     if action == "sort":
@@ -203,7 +208,7 @@ def _run_operation(case: dict, page: ReportPage, driver, wait) -> str:
 
 def _execute_case(case: dict, reporter: AllureReporter, driver, wait) -> str:
     login_page = c.LoginPage(driver, wait, reporter=reporter)
-    report_page = ReportPage(driver, wait)
+    report_page = ReportPage(driver, wait, table_selector=table_selector())
     messages: list[str] = []
 
     for index, (role, visibility) in enumerate(case["profiles"]):
