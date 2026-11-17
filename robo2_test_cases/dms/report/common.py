@@ -278,10 +278,18 @@ class ReportSession:
             self.report_page.apply_label_filters(filters_dict, expected_row)
         return f"Searched/Filtered by {', '.join(labels)} and verified matching rows."
 
-    def filter_by_date(self, expected_key: str = "REPORT_EXPECTED_DATE_TEXT") -> str:
+    def filter_by_date(
+        self,
+        expected_key: str = "REPORT_EXPECTED_DATE_TEXT",
+        default_expected: str = "",
+    ) -> str:
         date_from = expected_value("REPORT_DATE_FROM")
         date_to = expected_value("REPORT_DATE_TO")
-        expected_row = expected_value(expected_key) or expected_value("REPORT_EXPECTED_DATE_TEXT")
+        expected_row = (
+            expected_value(expected_key)
+            or default_expected
+            or expected_value("REPORT_EXPECTED_DATE_TEXT")
+        )
         if not date_from or not date_to or not expected_row:
             raise BlockedTest(
                 "Set REPORT_DATE_FROM, REPORT_DATE_TO, and REPORT_EXPECTED_DATE_TEXT in report/.env.report."

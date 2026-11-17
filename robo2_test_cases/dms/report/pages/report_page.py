@@ -48,7 +48,7 @@ class ReportPage(BasePage):
     )
     FILTER_TOGGLE_LOCATOR = (
         By.CSS_SELECTOR,
-        "#filterToggle a, #filterToggle, button.filter-btn, [title*='Filter' i]",
+        "#filterToggle a, #filterToggle, .filter-toggler a, .filter-toggler",
     )
     DATERANGE_INPUT_LOCATOR = (
         By.CSS_SELECTOR,
@@ -291,23 +291,59 @@ class ReportPage(BasePage):
 
     def _apply_daterangepicker(self, picker_input, date_from: str, date_to: str) -> None:
         self.click(picker_input)
-        start_el = self.wait.until(
-            EC.visibility_of_element_located(self.DATERANGE_START_LOCATOR)
+        time.sleep(0.4)
+
+        # If daterangepicker shows preset ranges (Today, Yesterday, Custom Range), click 'Custom Range'
+        custom_ranges = [
+            el
+            for el in self.driver.find_elements(
+                By.XPATH,
+                "//div[contains(@class, 'daterangepicker')]//li[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'custom')]",
+            )
+            if el.is_displayed()
+        ]
+        if custom_ranges:
+            self.click(custom_ranges[0])
+            time.sleep(0.3)
+
+        start_els = self.visible_elements(*self.DATERANGE_START_LOCATOR)
+        end_els = self.visible_elements(*self.DATERANGE_END_LOCATOR)
+        if start_els and end_els:
+            start_el, end_el = start_els[0], end_els[0]
+            sample = start_el.get_attribute("value") or ""
+            start_str = self._format_for_picker(date_from, sample)
+            end_str = self._format_for_picker(date_to, sample)
+            self.set_value(start_el, start_str)
+            self.set_value(end_el, end_str)
+            end_el.send_keys(Keys.TAB)
+            apply_btns = self.visible_elements(*self.DATERANGE_APPLY_LOCATOR)
+            if apply_btns:
+                self.click(apply_btns[0])
+            else:
+                end_el.send_keys(Keys.ENTER)
+            return
+
+        # Fallback: set the daterange input directly and click Apply / press Enter
+        sample = picker_input.get_attribute("value") or ""
+        sep = " - " if " - " in sample else (" to " if " to " in sample else " - ")
+        first_part = sample.split(sep)[0].strip() if sep in sample else sample
+        start_str = self._format_for_picker(date_from, first_part)
+        end_str = self._format_for_picker(date_to, first_part)
+        combined = f"{start_str}{sep}{end_str}"
+
+        self.driver.execute_script(
+            "arguments[0].removeAttribute('readonly');"
+            "arguments[0].value = arguments[1];"
+            "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));"
+            "arguments[0].dispatchEvent(new Event('change', {bubbles: true}));",
+            picker_input,
+            combined,
         )
-        end_el = self.wait.until(
-            EC.visibility_of_element_located(self.DATERANGE_END_LOCATOR)
-        )
-        sample = start_el.get_attribute("value") or ""
-        start_str = self._format_for_picker(date_from, sample)
-        end_str = self._format_for_picker(date_to, sample)
-        self.set_value(start_el, start_str)
-        self.set_value(end_el, end_str)
-        end_el.send_keys(Keys.TAB)
         apply_btns = self.visible_elements(*self.DATERANGE_APPLY_LOCATOR)
         if apply_btns:
             self.click(apply_btns[0])
         else:
-            end_el.send_keys(Keys.ENTER)
+            picker_input.send_keys(Keys.ENTER)
 
     def apply_date_range(
         self,
@@ -334,10 +370,13 @@ class ReportPage(BasePage):
                 toggles = self.visible_elements(*self.FILTER_TOGGLE_LOCATOR)
                 if toggles:
                     self.click(toggles[0])
-                    self.wait.until(
-                        lambda _d: self.visible_elements(*self.DATERANGE_INPUT_LOCATOR)
-                        or self.visible_elements(By.CSS_SELECTOR, from_selector)
-                    )
+                    try:
+                        WebDriverWait(self.driver, 5).until(
+                            lambda _d: self.visible_elements(*self.DATERANGE_INPUT_LOCATOR)
+                            or self.visible_elements(By.CSS_SELECTOR, from_selector)
+                        )
+                    except TimeoutException:
+                        pass
             from_fields = self.visible_elements(By.CSS_SELECTOR, from_selector)
             to_fields = self.visible_elements(By.CSS_SELECTOR, to_selector)
             picker_inputs = self.visible_elements(*self.DATERANGE_INPUT_LOCATOR)
@@ -354,8 +393,12 @@ class ReportPage(BasePage):
                 )
 
         self.wait_for_ajax_idle()
+        if expected_text.strip() == "*":
+            if self.report_table(timeout=10) is None:
+                raise AssertionError("Report table was not visible after applying date range.")
+            return
         self.assert_table_contains(expected_text, "date-filtered result")
-
+        
     def sort_columns(self, labels: list[str]) -> None:
         table = self.report_table()
         if table is None:
