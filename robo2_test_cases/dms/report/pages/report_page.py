@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import time
+
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -16,8 +18,13 @@ class ReportPage(BasePage):
     """Encapsulates interactions and assertions for Robo2mation report tables."""
 
     ACCESS_DENIED_WORDS = (
-        "permission denied", "access denied", "not authorized", "not permitted",
-        "you do not have permission", "you don't have permission", "insufficient permission",
+        "permission denied",
+        "access denied",
+        "not authorized",
+        "not permitted",
+        "you do not have permission",
+        "you don't have permission",
+        "insufficient permission",
     )
     DEFAULT_TABLE_SELECTORS = (
         "table.dataTable",
@@ -31,25 +38,82 @@ class ReportPage(BasePage):
     TABLE_HEADER_CELL_LOCATOR = (By.CSS_SELECTOR, "thead th")
     TABLE_SEARCH_SELECTORS = (
         "input.search_in_table",
-        "input[placeholder='Type and press enter']",
+        "input[placeholder*='Type and press enter' i]",
+        ".dataTables_filter input",
+        "input[type='search']",
     )
-    FILTER_TOGGLE_LOCATOR = (By.CSS_SELECTOR, "#filterToggle a, #filterToggle")
-    DATERANGE_INPUT_LOCATOR = (By.CSS_SELECTOR, "input[name='daterange'], input.date_input")
-    DATERANGE_START_LOCATOR = (By.CSS_SELECTOR, ".daterangepicker input[name='daterangepicker_start']")
-    DATERANGE_END_LOCATOR = (By.CSS_SELECTOR, ".daterangepicker input[name='daterangepicker_end']")
+    FILTER_TOGGLE_LOCATOR = (
+        By.CSS_SELECTOR,
+        "#filterToggle a, #filterToggle, button.filter-btn, [title*='Filter' i]",
+    )
+    DATERANGE_INPUT_LOCATOR = (
+        By.CSS_SELECTOR,
+        "input[name='daterange'], input.date_input",
+    )
+    DATERANGE_START_LOCATOR = (
+        By.CSS_SELECTOR,
+        ".daterangepicker input[name='daterangepicker_start']",
+    )
+    DATERANGE_END_LOCATOR = (
+        By.CSS_SELECTOR,
+        ".daterangepicker input[name='daterangepicker_end']",
+    )
     DATERANGE_APPLY_LOCATOR = (By.CSS_SELECTOR, ".daterangepicker .applyBtn")
     PAGE_SIZE_SELECTORS = (
         ".dataTables_length select",
         "select[name$='_length']",
     )
-    EXPORT_ACTION_SELECTORS = {
-        "copy": (".buttons-copy", "button[aria-label*='copy' i]", "a[title*='copy' i]"),
-        "csv": (".buttons-csv", "button[aria-label*='csv' i]", "a[title*='csv' i]"),
-        "excel": (".buttons-excel", "button[aria-label*='excel' i]", "a[title*='excel' i]"),
-        "print": (".buttons-print", "button[aria-label*='print' i]", "a[title*='print' i]"),
-        "download": ("button[title*='download' i]", "a[title*='download' i]", "button[aria-label*='download' i]"),
+    EXPORT_ACTION_SELECTORS: dict[str, tuple[str, ...]] = {
+        "copy": (
+            ".buttons-copy",
+            "button[aria-label*='copy' i]",
+            "a[title*='copy' i]",
+            "[data-action*='copy' i]",
+        ),
+        "csv": (
+            ".buttons-csv",
+            "button[aria-label*='csv' i]",
+            "a[title*='csv' i]",
+            "a[href*='csv' i]",
+            "[data-action*='csv' i]",
+        ),
+        "excel": (
+            ".buttons-excel",
+            "button[aria-label*='excel' i]",
+            "a[title*='excel' i]",
+            "a[href*='excel' i]",
+            "a[href*='xlsx' i]",
+            "[data-action*='excel' i]",
+        ),
+        "print": (
+            ".buttons-print",
+            "button[aria-label*='print' i]",
+            "a[title*='print' i]",
+            "[data-action*='print' i]",
+        ),
+        "download": (
+            "button[title*='download' i]",
+            "a[title*='download' i]",
+            "button[aria-label*='download' i]",
+            ".anticon-download",
+            "i.fa-download",
+            "i.zmdi-download",
+            "#three-dot > li.dropdown > a",
+        ),
     }
-    GENERIC_ACTION_LOCATOR = (By.CSS_SELECTOR, "button, a, input[type='button'], input[type='submit']")
+    GENERIC_ACTION_LOCATOR = (
+        By.CSS_SELECTOR,
+        ".ant-dropdown-menu-item, .dropdown-menu li, .dropdown-menu a, "
+        ".dt-button-collection a, .dt-button-collection button, "
+        "button, a, li[role='menuitem'], span.buttons-csv, span.buttons-excel, "
+        "input[type='button'], input[type='submit']",
+    )
+    HEADER_SYNONYMS: dict[str, tuple[str, ...]] = {
+        "users name": ("users name", "user name", "username", "user", "users"),
+        "ip address": ("ip address", "source ip", "ip"),
+        "operation": ("operation", "operations", "action", "activity"),
+        "description": ("description", "details", "message", "remarks"),
+    }
 
     def __init__(self, driver, wait: WebDriverWait, table_selector: str = ""):
         super().__init__(driver, wait)
@@ -62,6 +126,7 @@ class ReportPage(BasePage):
     def open(self, base_url: str, route: str) -> None:
         self.driver.get(base_url.rstrip("/") + "/" + route.strip("/"))
         self.wait_for_page_load()
+        self.wait_for_ajax_idle()
 
     def is_access_denied(self) -> bool:
         body = self.body_text().casefold()
@@ -73,7 +138,7 @@ class ReportPage(BasePage):
     def report_table(self, timeout: int = 12):
         def find_table(_driver):
             # Sticky-header grids (e.g., DataTables / Ant Design) render header and body in
-            # separate <table> elements. Only accept a table that actually has body rows.
+            # separate <table> elements. Prefer a table that actually has body rows.
             for selector in self._table_selectors:
                 for table in self.visible_elements(By.CSS_SELECTOR, selector):
                     try:
@@ -121,17 +186,23 @@ class ReportPage(BasePage):
 
         found = self.wait.until(expected_row_visible)
         if not found:
-            raise AssertionError(f"Expected {description} '{expected_text}' was not found in the report rows.")
+            raise AssertionError(
+                f"Expected {description} '{expected_text}' was not found in the report rows."
+            )
 
     def assert_table_not_contains(self, unexpected_text: str, description: str) -> None:
         if unexpected_text and unexpected_text.casefold() in self.table_text().casefold():
-            raise AssertionError(f"Unexpected {description} '{unexpected_text}' was visible in a restricted report.")
+            raise AssertionError(
+                f"Unexpected {description} '{unexpected_text}' was visible in a restricted report."
+            )
 
     def _table_search_input(self):
         for selector in self.TABLE_SEARCH_SELECTORS:
-            matches = self.visible_elements(By.CSS_SELECTOR, selector)
-            if matches:
-                return matches[0]
+            for elem in self.visible_elements(By.CSS_SELECTOR, selector):
+                el_id = (elem.get_attribute("id") or "").casefold()
+                placeholder = (elem.get_attribute("placeholder") or "").casefold()
+                if el_id != "search_text" and "search documents" not in placeholder:
+                    return elem
         return None
 
     def apply_label_filters(self, filters: dict[str, str], expected_text: str) -> None:
@@ -148,6 +219,7 @@ class ReportPage(BasePage):
                 self.set_value(field, value)
                 fallback = field
             self.apply_form(fallback)
+            self.wait_for_ajax_idle()
         except LookupError:
             if self._table_search_input() is None:
                 raise
@@ -175,7 +247,6 @@ class ReportPage(BasePage):
             return raw
         sample = (sample_value or "").strip()
         if "/" in sample:
-            # Bootstrap daterangepicker defaults to MM/DD/YYYY unless configured DD/MM/YYYY
             return parsed.strftime("%m/%d/%Y")
         if "-" in sample:
             parts = sample.split("-")
@@ -186,8 +257,12 @@ class ReportPage(BasePage):
 
     def _apply_daterangepicker(self, picker_input, date_from: str, date_to: str) -> None:
         self.click(picker_input)
-        start_el = self.wait.until(EC.visibility_of_element_located(self.DATERANGE_START_LOCATOR))
-        end_el = self.wait.until(EC.visibility_of_element_located(self.DATERANGE_END_LOCATOR))
+        start_el = self.wait.until(
+            EC.visibility_of_element_located(self.DATERANGE_START_LOCATOR)
+        )
+        end_el = self.wait.until(
+            EC.visibility_of_element_located(self.DATERANGE_END_LOCATOR)
+        )
         sample = start_el.get_attribute("value") or ""
         start_str = self._format_for_picker(date_from, sample)
         end_str = self._format_for_picker(date_to, sample)
@@ -251,23 +326,74 @@ class ReportPage(BasePage):
         table = self.report_table()
         if table is None:
             raise AssertionError("Cannot sort because the report table is missing.")
-        headers = table.find_elements(*self.TABLE_HEADER_CELL_LOCATOR)
+
+        # Collect visible headers from both the table and any sticky-header wrapper table
+        headers = [
+            h
+            for h in table.find_elements(*self.TABLE_HEADER_CELL_LOCATOR)
+            if h.is_displayed() and h.text.strip()
+        ]
+        if not headers:
+            headers = [
+                h
+                for h in self.visible_elements(*self.TABLE_HEADER_CELL_LOCATOR)
+                if h.text.strip()
+            ]
         if not headers:
             raise LookupError("The report table has no visible column headers.")
+
         targets = labels or [headers[0].text.strip()]
         for label in targets:
             wanted = self.normalize(label)
+            candidates = (wanted,) + self.HEADER_SYNONYMS.get(wanted, ())
+
             if wanted == "any":
-                target = next((h for h in headers if "sorting" in (h.get_attribute("class") or "").casefold()), headers[0])
+                target = next(
+                    (
+                        h
+                        for h in headers
+                        if "sorting" in (h.get_attribute("class") or "").casefold()
+                    ),
+                    headers[0],
+                )
             else:
-                target = next((h for h in headers if wanted in self.normalize(h.text)), None)
+                target = next(
+                    (
+                        h
+                        for h in headers
+                        if any(
+                            term == self.normalize(h.text)
+                            or term in self.normalize(h.text)
+                            for term in candidates
+                        )
+                    ),
+                    None,
+                )
+
             if target is None:
-                raise LookupError(f"Sortable report column '{label}' was not found.")
-            before = (target.get_attribute("class") or "") + "|" + (target.get_attribute("aria-sort") or "")
+                available = [h.text.strip() for h in headers]
+                raise LookupError(
+                    f"Sortable report column '{label}' was not found. Visible columns: {available}"
+                )
+
+            before = (
+                (target.get_attribute("class") or "")
+                + "|"
+                + (target.get_attribute("aria-sort") or "")
+            )
             self.click(target)
-            self.wait.until(lambda _d: (
-                (target.get_attribute("class") or "") + "|" + (target.get_attribute("aria-sort") or "")
-            ) != before)
+            self.wait_for_ajax_idle()
+            try:
+                WebDriverWait(self.driver, 5).until(
+                    lambda _d: (
+                        (target.get_attribute("class") or "")
+                        + "|"
+                        + (target.get_attribute("aria-sort") or "")
+                    )
+                    != before
+                )
+            except TimeoutException:
+                pass
 
     def choose_page_size(self, size: str = "10") -> None:
         for selector in self.PAGE_SIZE_SELECTORS:
@@ -276,7 +402,12 @@ class ReportPage(BasePage):
                 select = Select(fields[0])
                 if size.casefold() == "all":
                     option = next(
-                        (o for o in select.options if "all" in o.text.casefold() or o.get_attribute("value") == "-1"),
+                        (
+                            o
+                            for o in select.options
+                            if "all" in o.text.casefold()
+                            or o.get_attribute("value") == "-1"
+                        ),
                         None,
                     )
                     if option is None:
@@ -284,59 +415,150 @@ class ReportPage(BasePage):
                     select.select_by_value(option.get_attribute("value"))
                 else:
                     select.select_by_visible_text(size)
+                self.wait_for_ajax_idle()
                 return
         raise LookupError("The report page-size selector was not found.")
 
-    def click_action(self, action: str):
-        key = action.casefold()
+    def select_first_row_if_selectable(self) -> None:
+        """If the report table has row selection checkboxes and none are checked, select the first row."""
+        table = self.report_table(timeout=5)
+        if table is None:
+            return
+        checkboxes = table.find_elements(
+            By.CSS_SELECTOR,
+            "tbody input[type='checkbox'], tbody .ant-checkbox-input, tbody td.select-checkbox",
+        )
+        if not checkboxes:
+            return
+        for cb in checkboxes:
+            if cb.is_selected() or "checked" in (cb.get_attribute("class") or ""):
+                return
+        target = checkboxes[0]
+        try:
+            if target.is_displayed():
+                self.click(target)
+            else:
+                wrapper = target.find_element(
+                    By.XPATH, "./ancestor::*[self::label or self::td or self::span][1]"
+                )
+                self.click(wrapper)
+            time.sleep(0.3)
+        except Exception:
+            pass
+
+    def _find_export_item(self, key: str):
         for selector in self.EXPORT_ACTION_SELECTORS.get(key, ()):
             matches = self.visible_elements(By.CSS_SELECTOR, selector)
             if matches:
-                self.click(matches[0])
                 return matches[0]
-        # Some report screens nest export options inside a Download menu.
-        if key in {"copy", "csv", "excel", "print"}:
-            download_buttons = []
-            for selector in self.EXPORT_ACTION_SELECTORS["download"]:
-                download_buttons.extend(self.visible_elements(By.CSS_SELECTOR, selector))
-            if download_buttons:
-                self.click(download_buttons[0])
-                for selector in self.EXPORT_ACTION_SELECTORS.get(key, ()):
-                    matches = self.visible_elements(By.CSS_SELECTOR, selector)
-                    if matches:
-                        self.click(matches[0])
-                        return matches[0]
+
         for element in self.driver.find_elements(*self.GENERIC_ACTION_LOCATOR):
             try:
+                if not element.is_displayed():
+                    continue
                 text = self.normalize(
                     element.text
                     or element.get_attribute("value")
                     or element.get_attribute("title")
                     or element.get_attribute("aria-label")
+                    or element.get_attribute("data-original-title")
                     or ""
                 )
-                if element.is_displayed() and element.is_enabled() and key in text.split():
-                    self.click(element)
+                if key == text or key in text.split():
                     return element
             except Exception:
                 continue
+        return None
+
+    def click_action(self, action: str):
+        self.select_first_row_if_selectable()
+        key = action.casefold()
+
+        # 1. Click directly if the export button is already visible
+        target = self._find_export_item(key)
+        if target is not None:
+            self.click(target)
+            time.sleep(0.4)
+            return target
+
+        # 2. Otherwise open the Download dropdown menu first, then click the item
+        if key in {"copy", "csv", "excel", "print"}:
+            download_triggers = []
+            for selector in self.EXPORT_ACTION_SELECTORS["download"]:
+                download_triggers.extend(self.visible_elements(By.CSS_SELECTOR, selector))
+
+            if not download_triggers:
+                download_triggers = [
+                    el
+                    for el in self.driver.find_elements(
+                        By.XPATH,
+                        "//input[contains(@placeholder, 'Type and press enter')]/following::*[self::button or self::a or self::span[contains(@class, 'anticon')]]",
+                    )
+                    if el.is_displayed()
+                ]
+
+            for trigger in download_triggers:
+                try:
+                    self.click(trigger)
+                    time.sleep(0.6)
+                    target = self._find_export_item(key)
+                    if target is not None:
+                        self.click(target)
+                        time.sleep(0.4)
+                        return target
+                except Exception:
+                    continue
+
         raise LookupError(f"The '{action}' export/download control was not found.")
 
-    def wait_for_download(self, directory: Path, before: set[str], extension: str, timeout: int = 30) -> Path:
+    def wait_for_download(
+        self, directory: Path, before: set[str], extension: str, timeout: int = 30
+    ) -> Path:
+        user_downloads = Path.home() / "Downloads"
+        user_before = (
+            {p.name for p in user_downloads.glob("*") if p.is_file()}
+            if user_downloads.is_dir()
+            else set()
+        )
+        valid_exts = (
+            {".csv"}
+            if extension.lower() == ".csv"
+            else {".xlsx", ".xls", ".csv", ".zip"}
+        )
+
         def _download_ready(_driver):
-            if list(directory.glob("*.crdownload")):
+            if list(directory.glob("*.crdownload")) or list(directory.glob("*.tmp")):
                 return False
             candidates = [
-                path for path in directory.glob(f"*{extension}")
-                if path.is_file() and path.name not in before
+                path
+                for path in directory.glob("*")
+                if path.is_file()
+                and path.name not in before
+                and path.suffix.lower() in valid_exts
             ]
-            if not candidates:
-                return False
-            candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
-            return candidates[0]
+            if candidates:
+                candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+                return candidates[0]
+
+            if user_downloads.is_dir():
+                sys_candidates = [
+                    path
+                    for path in user_downloads.glob("*")
+                    if path.is_file()
+                    and path.name not in user_before
+                    and not path.name.endswith((".crdownload", ".tmp"))
+                    and path.suffix.lower() in valid_exts
+                    and (time.time() - path.stat().st_mtime) < timeout + 5
+                ]
+                if sys_candidates:
+                    sys_candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+                    return sys_candidates[0]
+            return False
 
         try:
-            return WebDriverWait(self.driver, timeout, poll_frequency=0.5).until(_download_ready)
+            return WebDriverWait(self.driver, timeout, poll_frequency=0.5).until(
+                _download_ready
+            )
         except TimeoutException as exc:
             raise TimeoutError(
                 f"No new {extension} report download appeared in {directory} within {timeout} seconds."
@@ -350,17 +572,54 @@ class ReportPage(BasePage):
         timeout: int = 30,
     ) -> Path | None:
         """Wait for a direct file download, or return None if the server queues it to Requested Downloads."""
+        user_downloads = Path.home() / "Downloads"
+        user_before = (
+            {p.name for p in user_downloads.glob("*") if p.is_file()}
+            if user_downloads.is_dir()
+            else set()
+        )
+        valid_exts = (
+            {".csv"}
+            if extension.lower() == ".csv"
+            else {".xlsx", ".xls", ".csv", ".zip"}
+        )
+
         def _ready(_driver):
-            if not list(directory.glob("*.crdownload")):
+            if not list(directory.glob("*.crdownload")) and not list(
+                directory.glob("*.tmp")
+            ):
                 candidates = [
-                    path for path in directory.glob(f"*{extension}")
-                    if path.is_file() and path.name not in before
+                    path
+                    for path in directory.glob("*")
+                    if path.is_file()
+                    and path.name not in before
+                    and path.suffix.lower() in valid_exts
                 ]
                 if candidates:
                     candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
                     return candidates[0]
+
+                if user_downloads.is_dir():
+                    sys_candidates = [
+                        path
+                        for path in user_downloads.glob("*")
+                        if path.is_file()
+                        and path.name not in user_before
+                        and not path.name.endswith((".crdownload", ".tmp"))
+                        and path.suffix.lower() in valid_exts
+                        and (time.time() - path.stat().st_mtime) < timeout + 5
+                    ]
+                    if sys_candidates:
+                        sys_candidates.sort(
+                            key=lambda item: item.stat().st_mtime, reverse=True
+                        )
+                        return sys_candidates[0]
+
             body_lower = self.body_text().casefold()
-            if "requested_downloads" in body_lower or "requested downloads" in body_lower:
+            if (
+                "requested_downloads" in body_lower
+                or "requested downloads" in body_lower
+            ):
                 return "QUEUED"
             return False
 
