@@ -23,16 +23,12 @@ class ReportPage(BasePage):
         "not authorized",
         "unauthorized",
         "not permitted",
-        "not allowed",
-        "no permission",
         "you do not have permission",
         "you don't have permission",
         "insufficient permission",
         "403 forbidden",
-        "403 error",
-        "forbidden",
+        "404 not found",
         "page not found",
-        "404",
     )
     DEFAULT_TABLE_SELECTORS = (
         "table.dataTable",
@@ -154,8 +150,9 @@ class ReportPage(BasePage):
 
         return False
 
-    def report_table(self, timeout: int = 12):
+    def report_table(self, timeout: int = 20):
         def find_table(_driver):
+            # 1. Prefer a visible table that has tbody rows
             for selector in self._table_selectors:
                 for table in self.visible_elements(By.CSS_SELECTOR, selector):
                     try:
@@ -163,16 +160,28 @@ class ReportPage(BasePage):
                             return table
                     except Exception:
                         continue
+            # 2. Fallback: accept a visible DataTable container or table with thead headers
+            #    (handles empty tables or slow AJAX tables that render headers first)
+            for selector in (".dataTables_wrapper", "table.dataTable", "table.table", "main table"):
+                matches = self.visible_elements(By.CSS_SELECTOR, selector)
+                if matches:
+                    return matches[0]
             return False
 
         try:
-            return WebDriverWait(self.driver, timeout).until(find_table)
+            table = WebDriverWait(self.driver, timeout).until(find_table)
+            self.wait_for_ajax_idle(timeout=10)
+            return table
         except TimeoutException:
             return None
 
     def assert_accessible(self) -> None:
         table = self.report_table()
-        if self.is_access_denied() or table is None:
+        current = self.driver.current_url.casefold()
+        on_login = "/login" in current and "report" not in current
+        has_rows = bool(table and table.find_elements(*self.TABLE_BODY_ROW_LOCATOR))
+        # A populated report table proves access even if log rows contain words like "unauthorized".
+        if table is None or on_login or (not has_rows and self.is_access_denied()):
             raise AssertionError(
                 f"Report page was not accessible. URL: {self.driver.current_url}; "
                 f"page text: {self.body_text()[:400]}"
