@@ -21,28 +21,28 @@ for _p in (str(REPORT_DIR), str(PROJECT_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from allure_commons.types import AttachmentType  # noqa: E402
-from allure_commons.utils import uuid4  # noqa: E402
-from dotenv import load_dotenv  # noqa: E402
-import openpyxl  # noqa: E402
-from selenium import webdriver  # noqa: E402
-from selenium.common.exceptions import (  # noqa: E402
+from allure_commons.types import AttachmentType  
+from allure_commons.utils import uuid4  
+from dotenv import load_dotenv  
+import openpyxl  
+from selenium import webdriver  
+from selenium.common.exceptions import (  
     NoSuchElementException,
     StaleElementReferenceException,
     TimeoutException,
 )
-from selenium.webdriver.chrome.options import Options  # noqa: E402
-from selenium.webdriver.common.by import By  # noqa: E402
-from selenium.webdriver.common.keys import Keys  # noqa: E402
-from selenium.webdriver.remote.webdriver import WebDriver  # noqa: E402
-from selenium.webdriver.support import expected_conditions as EC  # noqa: E402
-from selenium.webdriver.support.ui import WebDriverWait  # noqa: E402
+from selenium.webdriver.chrome.options import Options  
+from selenium.webdriver.common.by import By  
+from selenium.webdriver.common.keys import Keys  
+from selenium.webdriver.remote.webdriver import WebDriver  
+from selenium.webdriver.support import expected_conditions as EC  
+from selenium.webdriver.support.ui import WebDriverWait  
 
-from report.allure_reporter import AllureReporter  # noqa: E402
-from report.pages.base_page import BasePage  # noqa: E402
-from report.pages.report_page import ReportPage  # noqa: E402
-from report.pages.requested_downloads_page import RequestedDownloadsPage  # noqa: E402
-from report.report_config import (  # noqa: E402
+from report.allure_reporter import AllureReporter  
+from report.pages.base_page import BasePage  
+from report.pages.report_page import ReportPage  
+from report.pages.requested_downloads_page import RequestedDownloadsPage  
+from report.report_config import (  
     ReportConfigError,
     date_selectors,
     expected_value,
@@ -51,10 +51,8 @@ from report.report_config import (  # noqa: E402
     table_selector,
 )
 
-
-# ---------------------------------------------------------------------------
 # 1. Configuration & Directories
-# ---------------------------------------------------------------------------
+
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 load_dotenv(REPORT_DIR / ".env.report", override=False)
 
@@ -90,9 +88,8 @@ class BlockedTest(RuntimeError):
     """Raised when required role credentials or test data are missing in .env.report."""
 
 
-# ---------------------------------------------------------------------------
 # 2. Page Object Model: LoginPage
-# ---------------------------------------------------------------------------
+
 class LoginPage(BasePage):
     """Page Object handling authentication and user session switching."""
 
@@ -187,9 +184,8 @@ class LoginPage(BasePage):
             self.login_as(username, password)
 
 
-# ---------------------------------------------------------------------------
 # 3. POM + Allure Test Session Facade (ReportSession)
-# ---------------------------------------------------------------------------
+
 class ReportSession:
     """High-level POM + Allure facade used by individual repXXX_*.py test scripts."""
 
@@ -308,6 +304,43 @@ class ReportSession:
             raise AssertionError(f"Expected user '{other}' in user dropdown for '{self.current_role}'.")
         return f"Role '{self.current_role}': accessed report ({len(rows)} row(s)) with all-users selector including '{other}'."
 
+    def filter_by_user(self, username: str = "") -> str:
+        """Select a user from the report's user <select> dropdown and verify table rows load."""
+        target = (
+            username
+            or expected_value(f"REPORT_EXPECTED_OTHER_TEXT_{self.current_role.upper()}")
+            or expected_value("REPORT_EXPECTED_OWN_TEXT")
+            or "ahsan"
+        )
+        with self.step(f"Filter by user '{target}'"):
+            selected = self.driver.execute_script(
+                "var wanted = arguments[0].toLowerCase();"
+                "var selects = document.querySelectorAll('select');"
+                "for (var s of selects) {"
+                "  if (s.closest('.dataTables_length')) continue;"
+                "  var opts = Array.from(s.options);"
+                "  var match = opts.find(o => (o.textContent || '').toLowerCase().includes('(' + wanted + ')'))"
+                "           || opts.find(o => (o.textContent || '').toLowerCase().includes(wanted));"
+                "  if (match) {"
+                "    s.value = match.value;"
+                "    s.dispatchEvent(new Event('change', {bubbles: true}));"
+                "    if (window.jQuery) window.jQuery(s).trigger('change');"
+                "    return match.textContent.trim();"
+                "  }"
+                "}"
+                "return null;",
+                target,
+            )
+            if not selected:
+                raise LookupError(f"User '{target}' was not found in the user filter dropdown.")
+            self.report_page.wait_for_ajax_idle()
+            self.report_page.assert_accessible()
+            table = self.report_page.report_table(timeout=10)
+            rows = table.find_elements(*self.report_page.TABLE_BODY_ROW_LOCATOR) if table else []
+            if not rows:
+                raise AssertionError(f"Expected filtered rows for user '{selected}', but table was empty.")
+        return f"Filtered by user '{selected}' ({len(rows)} row(s) visible)."
+
     def search_or_filter(
         self, labels: list[str], expected_key: str = "REPORT_EXPECTED_FILTER_TEXT"
     ) -> str:
@@ -410,9 +443,8 @@ class ReportSession:
         return f"Completed export actions ({', '.join(actions)}).{files_info}{req_info}"
 
 
-# ---------------------------------------------------------------------------
 # 4. Browser, Screenshot, Allure & Excel Utilities
-# ---------------------------------------------------------------------------
+
 def create_allure_reporter() -> AllureReporter:
     return AllureReporter(ALLURE_RESULTS_DIR)
 
@@ -503,9 +535,8 @@ def short(error: BaseException) -> str:
     return f"{type(error).__name__}: {first}"
 
 
-# ---------------------------------------------------------------------------
 # 5. Excel Validation & Result Reporting
-# ---------------------------------------------------------------------------
+
 def _active_excel_and_sheet() -> tuple[str, str]:
     raw_excel = os.environ.get("EXCEL_PATH") or EXCEL_PATH
     if not raw_excel:
@@ -635,9 +666,8 @@ def write_result(
     print(f"Saved to: {os.path.abspath(excel_path)}  (sheet '{ws.title}', row {row})")
 
 
-# ---------------------------------------------------------------------------
 # 6. Unified POM Test Runner (Used by repXXX_*.py scripts)
-# ---------------------------------------------------------------------------
+
 def _parse_docstring(doc: str | None, fallback_title: str) -> tuple[str, str]:
     lines = [line.strip() for line in (doc or "").strip().splitlines() if line.strip()]
     if not lines:
