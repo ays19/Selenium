@@ -39,12 +39,24 @@ class BasePage:
         """Wait until the browser reports document.readyState == 'complete'."""
         self.wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
 
-    def wait_for_ajax_idle(self, timeout: int = 5) -> None:
+    def wait_for_ajax_idle(self, timeout: int = 15) -> None:
         """Wait for visible DataTables/spinner loading indicators to finish."""
-        try:
-            WebDriverWait(self.driver, timeout).until(
-                lambda _d: not self.visible_elements(*self.LOADING_INDICATORS_LOCATOR)
+        def _is_idle(driver) -> bool:
+            if self.visible_elements(*self.LOADING_INDICATORS_LOCATOR):
+                return False
+            return bool(
+                driver.execute_script(
+                    "var els = document.querySelectorAll('[style*=\"--datatable-loading-index\"]');"
+                    "for (var i = 0; i < els.length; i++) {"
+                    "  var v = parseInt(els[i].style.getPropertyValue('--datatable-loading-index'), 10);"
+                    "  if (!isNaN(v) && v > 0) return false;"
+                    "}"
+                    "return !window.jQuery || window.jQuery.active === 0;"
+                )
             )
+
+        try:
+            WebDriverWait(self.driver, timeout).until(_is_idle)
         except TimeoutException:
             pass
 
