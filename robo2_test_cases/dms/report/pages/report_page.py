@@ -725,6 +725,14 @@ class ReportPage(BasePage):
                 ]
 
             for trigger in download_triggers:
+                for close_btn in self.visible_elements(
+                    By.CSS_SELECTOR,
+                    "[data-notify] .close, .alert .close, button[data-dismiss='alert']",
+                ):
+                    try:
+                        self.driver.execute_script("arguments[0].click();", close_btn)
+                    except Exception:
+                        pass
                 try:
                     self.click(trigger)
                     time.sleep(0.6)
