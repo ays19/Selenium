@@ -276,6 +276,38 @@ class ReportSession:
 
             return f"Role '{role.lower()}': verified '{visibility}' record ('{expected}')."
 
+    def verify_user_dropdown_scope(self, visibility: str) -> str:
+        """Verify scope on reports where the user is selected via dropdown rather than a table column."""
+        self.report_page.assert_accessible()
+        table = self.report_page.report_table(timeout=10)
+        rows = table.find_elements(*self.report_page.TABLE_BODY_ROW_LOCATOR) if table else []
+        if not rows:
+            raise AssertionError(f"Expected report rows for '{self.current_role}', but table was empty.")
+
+        dropdown_text = " ".join(
+            (el.get_attribute("textContent") or "")
+            for el in self.driver.find_elements(By.CSS_SELECTOR, "select option")
+        ).casefold()
+        page_text = self.report_page.body_text().casefold()
+
+        if visibility == "own":
+            own = expected_value("REPORT_EXPECTED_OWN_TEXT") or "ahsan"
+            other = expected_value("REPORT_EXPECTED_OTHER_TEXT") or "nahif"
+            if own.casefold() not in dropdown_text and own.casefold() not in page_text:
+                raise AssertionError(f"Expected own user '{own}' on the report.")
+            if other.casefold() in dropdown_text or other.casefold() in page_text:
+                raise AssertionError(f"Unexpected other user '{other}' was accessible to '{self.current_role}'.")
+            return f"Role '{self.current_role}': sees own records for '{own}' ({len(rows)} row(s)) and cannot access '{other}'."
+
+        other = (
+            expected_value(f"REPORT_EXPECTED_OTHER_TEXT_{self.current_role.upper()}")
+            or expected_value("REPORT_EXPECTED_OWN_TEXT")
+            or "ahsan"
+        )
+        if other.casefold() not in dropdown_text:
+            raise AssertionError(f"Expected user '{other}' in user dropdown for '{self.current_role}'.")
+        return f"Role '{self.current_role}': accessed report ({len(rows)} row(s)) with all-users selector including '{other}'."
+
     def search_or_filter(
         self, labels: list[str], expected_key: str = "REPORT_EXPECTED_FILTER_TEXT"
     ) -> str:
