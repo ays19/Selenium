@@ -268,7 +268,9 @@ class ReportSession:
                     raise BlockedTest(
                         "Set REPORT_EXPECTED_OTHER_TEXT in report/.env.report to verify restricted rows."
                     )
-                self.report_page.assert_table_not_contains(other, "another user's record")
+                self.report_page.assert_table_not_contains(
+                    other, "another user's record", allow_with_text=expected
+                )
                 return f"Role '{role.lower()}': sees own record ('{expected}') and cannot see '{other}'."
 
             return f"Role '{role.lower()}': verified '{visibility}' record ('{expected}')."

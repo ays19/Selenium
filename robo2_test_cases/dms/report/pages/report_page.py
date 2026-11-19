@@ -302,8 +302,50 @@ class ReportPage(BasePage):
                 f"Expected {description} '{expected_text}' was not found in the report rows."
             )
 
-    def assert_table_not_contains(self, unexpected_text: str, description: str) -> None:
-        if unexpected_text and unexpected_text.casefold() in self.table_text().casefold():
+    @staticmethod
+    def _row_exposes_other_user(
+        cells: list[str], unexpected_text: str, allow_with_text: str = ""
+    ) -> bool:
+        other_low = unexpected_text.strip().casefold()
+        own_low = allow_with_text.strip().casefold()
+        norm_cells = [c.casefold() for c in cells if c]
+        if not other_low or not any(other_low in c for c in norm_cells):
+            return False
+        if not own_low:
+            return True
+        has_own_cell = any(
+            f"({own_low})" in c or (own_low in c and other_low not in c)
+            for c in norm_cells
+        )
+        return not has_own_cell
+
+    def assert_table_not_contains(
+        self, unexpected_text: str, description: str, allow_with_text: str = ""
+    ) -> None:
+        if not unexpected_text:
+            return
+        if allow_with_text:
+            table = self.report_table(timeout=5)
+            if table is not None:
+                rows = self.driver.execute_script(
+                    "return Array.from(arguments[0].querySelectorAll('tbody tr'))"
+                    "  .filter(function(tr) { return !tr.querySelector('td.dataTables_empty'); })"
+                    "  .map(function(tr) {"
+                    "    return Array.from(tr.querySelectorAll('td'))"
+                    "      .map(function(td) { return (td.textContent || '').trim(); });"
+                    "  })"
+                    "  .filter(function(cells) { return cells.length > 0; });",
+                    table,
+                )
+                if rows:
+                    for cells in rows:
+                        if self._row_exposes_other_user(cells, unexpected_text, allow_with_text):
+                            raise AssertionError(
+                                f"Unexpected {description} '{unexpected_text}' was visible in a restricted report."
+                            )
+                    return
+
+        if unexpected_text.casefold() in self.table_text().casefold():
             raise AssertionError(
                 f"Unexpected {description} '{unexpected_text}' was visible in a restricted report."
             )

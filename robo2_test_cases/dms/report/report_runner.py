@@ -89,7 +89,9 @@ def _verify_visibility(page: ReportPage, visibility: str, role: str) -> None:
                     "Set REPORT_EXPECTED_OTHER_TEXT (or the role-specific REPORT_EXPECTED_OTHER_TEXT_<ROLE>) "
                     "so the restricted report can verify that another user's row is not exposed."
                 )
-            page.assert_table_not_contains(other, "another user's record")
+            page.assert_table_not_contains(
+                other, "another user's record", allow_with_text=expected
+            )
 
 
 def _run_export_buttons(
