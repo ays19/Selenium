@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import re
 import time
 
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
@@ -128,9 +129,21 @@ class ReportPage(BasePage):
     )
     HEADER_SYNONYMS: dict[str, tuple[str, ...]] = {
         "users name": ("users name", "user name", "username", "user", "users"),
+        "user": ("user", "users", "users name", "user name", "username", "initiator", "initiator name"),
+        "all users": ("all users", "user", "users", "users name", "user name", "username"),
+        "initiator name": ("initiator name", "initiator", "user", "users name", "created by"),
         "ip address": ("ip address", "source ip", "ip"),
+        "source ip": ("source ip", "ip address", "ip"),
+        "ip": ("ip", "ip address", "source ip"),
         "operation": ("operation", "operations", "action", "activity"),
+        "all operation": ("all operation", "operation", "operations", "action", "activity"),
         "description": ("description", "details", "message", "remarks"),
+        "project": ("project", "process", "project name", "process name", "workflow"),
+        "process": ("process", "project", "process name", "project name", "workflow"),
+        "app number": ("app number", "app id", "application id", "application number", "app no"),
+        "status": ("status", "task status", "app status", "application status", "state"),
+        "document name": ("document name", "document", "file name", "name"),
+        "document type": ("document type", "doc type", "type"),
     }
 
     def __init__(self, driver, wait: WebDriverWait, table_selector: str = ""):
@@ -254,7 +267,9 @@ class ReportPage(BasePage):
             return chart.text or self.body_text()
         raise AssertionError("The report data table was not found.")
 
-    def assert_table_contains(self, expected_text: str, description: str) -> None:
+    def assert_table_contains(
+        self, expected_text: str, description: str, timeout: int | None = None
+    ) -> None:
         if not expected_text:
             raise LookupError(f"Expected value for {description} is empty.")
 
@@ -267,8 +282,17 @@ class ReportPage(BasePage):
                 return expected_text.casefold() in (chart.text or self.body_text()).casefold()
             return False
 
+        waiter = (
+            WebDriverWait(
+                self.driver,
+                timeout,
+                ignored_exceptions=(StaleElementReferenceException,),
+            )
+            if timeout is not None
+            else self.wait
+        )
         try:
-            found = self.wait.until(expected_row_visible)
+            found = waiter.until(expected_row_visible)
         except TimeoutException as exc:
             raise AssertionError(
                 f"Expected {description} '{expected_text}' was not found in the report rows."
@@ -341,6 +365,99 @@ class ReportPage(BasePage):
                 if el_id != "search_text" and "search documents" not in placeholder:
                     return elem
         return None
+
+    def _clean_discovered_value(self, label: str, raw_text: str) -> str:
+        lines = [ln.strip() for ln in (raw_text or "").splitlines() if ln.strip()]
+        text = " ".join(lines).strip()
+        if not text or text.casefold() in {"n/a", "-", "none", "null"}:
+            return ""
+        wanted = self.normalize(label)
+        if wanted in {"user", "users", "users name", "all users", "initiator name", "uploader"}:
+            match = re.search(r"\(([^()]+)\)\s*$", text)
+            if match:
+                return match.group(1).strip()
+            return text
+        if wanted in {"project", "process"}:
+            prefix = re.sub(r"\s*\([^)]*\)\s*$", "", text).strip()
+            return prefix or text
+        return text
+
+    def discover_filter_values(self, labels: list[str]) -> dict[str, str]:
+        if not labels:
+            return {}
+        table = self.report_table(timeout=10)
+        if table is None:
+            return {}
+
+        data = self.driver.execute_script(
+            "var tbl = arguments[0];"
+            "var headCells = Array.from(tbl.querySelectorAll('thead th'));"
+            "var headers = headCells.map(function(th) { return (th.textContent || '').trim(); });"
+            "if (!headers.some(Boolean)) {"
+            "  var wrap = tbl.closest('.dataTables_wrapper');"
+            "  if (wrap) {"
+            "    headers = Array.from(wrap.querySelectorAll('.dataTables_scrollHead thead th'))"
+            "      .map(function(th) { return (th.textContent || '').trim(); });"
+            "  }"
+            "}"
+            "var rows = [];"
+            "var trs = tbl.querySelectorAll('tbody tr');"
+            "for (var i = 0; i < trs.length && rows.length < 25; i++) {"
+            "  if (trs[i].querySelector('td.dataTables_empty')) continue;"
+            "  var cells = Array.from(trs[i].querySelectorAll('td'))"
+            "    .map(function(td) { return (td.textContent || '').trim(); });"
+            "  if (cells.length) rows.push(cells);"
+            "}"
+            "return {headers: headers, rows: rows};",
+            table,
+        )
+        if not data or not data.get("headers") or not data.get("rows"):
+            return {}
+
+        norm_headers = [self.normalize(h) for h in data["headers"]]
+        col_map: dict[str, int] = {}
+        for label in labels:
+            wanted = self.normalize(label)
+            candidates = tuple(dict.fromkeys((wanted,) + self.HEADER_SYNONYMS.get(wanted, ())))
+            col_idx = None
+            for term in candidates:
+                col_idx = next((i for i, h in enumerate(norm_headers) if h == term), None)
+                if col_idx is not None:
+                    break
+            if col_idx is None:
+                for term in candidates:
+                    col_idx = next((i for i, h in enumerate(norm_headers) if term and term in h), None)
+                    if col_idx is not None:
+                        break
+            if col_idx is not None:
+                col_map[label] = col_idx
+
+        if not col_map:
+            return {}
+
+        rows = data["rows"]
+        for row in rows:
+            candidate_vals: dict[str, str] = {}
+            all_present = True
+            for label, idx in col_map.items():
+                raw = row[idx] if idx < len(row) else ""
+                cleaned = self._clean_discovered_value(label, raw)
+                if not cleaned:
+                    all_present = False
+                    break
+                candidate_vals[label] = cleaned
+            if all_present:
+                return candidate_vals
+
+        discovered: dict[str, str] = {}
+        for label, idx in col_map.items():
+            for row in rows:
+                raw = row[idx] if idx < len(row) else ""
+                cleaned = self._clean_discovered_value(label, raw)
+                if cleaned:
+                    discovered[label] = cleaned
+                    break
+        return discovered
 
     def _open_filter_panel(self) -> None:
         panels = self.driver.find_elements(*self.FILTER_PANEL_LOCATOR)
@@ -452,14 +569,18 @@ class ReportPage(BasePage):
     def _select_selectpicker_option(self, select_el, label: str, value: str) -> str:
         chosen = self.driver.execute_script(
             "var sel = arguments[0], wanted = (arguments[1] || '').trim().toLowerCase();"
-            "var opts = Array.from(sel.options || []).map(function(o) {"
-            "  return {value: o.value, text: (o.textContent || '').trim()};"
-            "}).filter(function(o) { return wanted === '' || o.value !== ''; });"
+            "var allOpts = Array.from(sel.options || []).map(function(o, idx) {"
+            "  return {index: idx, value: o.value, text: (o.textContent || '').trim()};"
+            "});"
+            "var opts = allOpts.filter(function(o) { return wanted === '' || o.value !== ''; });"
             "var match = opts.find(function(o) { return o.text.toLowerCase() === wanted; })"
             "  || opts.find(function(o) { return o.text.toLowerCase().indexOf('(' + wanted + ')') !== -1; })"
             "  || opts.find(function(o) { return o.text.toLowerCase().indexOf(wanted) !== -1; })"
             "  || opts.find(function(o) { return o.value.toLowerCase() === wanted; });"
-            "return match || null;",
+            "if (!match) return null;"
+            "var count = allOpts.filter(function(o) { return o.value === match.value; }).length;"
+            "match.duplicateValue = count > 1;"
+            "return match;",
             select_el,
             value,
         )
@@ -467,8 +588,17 @@ class ReportPage(BasePage):
             raise LookupError(f"Option '{value}' not found in '{label}' filter dropdown.")
 
         self.driver.execute_script(
-            "var sel = arguments[0], val = arguments[1];"
-            "if (window.jQuery && window.jQuery.fn && window.jQuery.fn.selectpicker) {"
+            "var sel = arguments[0], val = arguments[1], optIndex = arguments[2], dup = arguments[3];"
+            "if (dup) {"
+            "  sel.selectedIndex = optIndex;"
+            "  if (window.jQuery && window.jQuery.fn && window.jQuery.fn.selectpicker) {"
+            "    window.jQuery(sel).selectpicker('render');"
+            "    window.jQuery(sel).trigger('change');"
+            "  } else {"
+            "    sel.dispatchEvent(new Event('change', {bubbles: true}));"
+            "    if (window.jQuery) window.jQuery(sel).trigger('change');"
+            "  }"
+            "} else if (window.jQuery && window.jQuery.fn && window.jQuery.fn.selectpicker) {"
             "  window.jQuery(sel).selectpicker('val', val);"
             "  window.jQuery(sel).trigger('change');"
             "} else {"
@@ -478,6 +608,8 @@ class ReportPage(BasePage):
             "}",
             select_el,
             chosen["value"],
+            chosen["index"],
+            bool(chosen.get("duplicateValue")),
         )
         time.sleep(0.3)
         self.wait_for_ajax_idle()
@@ -534,7 +666,29 @@ class ReportPage(BasePage):
                 self.set_value(search_box, value)
                 search_box.send_keys(Keys.ENTER)
                 self.wait_for_ajax_idle()
-                self.assert_table_contains(value, f"search result for '{label}'")
+                sp_fallback = self._match_selectpicker_filters({label: value})
+                try:
+                    self.assert_table_contains(
+                        value,
+                        f"search result for '{label}'",
+                        timeout=5 if sp_fallback else None,
+                    )
+                except AssertionError:
+                    if not sp_fallback:
+                        raise
+                    # Clear the failed text query before applying the selectpicker filter
+                    search_box = self._table_search_input()
+                    if search_box is not None:
+                        search_box.click()
+                        search_box.send_keys(Keys.CONTROL, "a")
+                        search_box.send_keys(Keys.BACKSPACE)
+                        search_box.send_keys(Keys.ENTER)
+                        time.sleep(0.3)
+                        self.wait_for_ajax_idle()
+                    self._open_filter_panel()
+                    sp_el, sp_label, sp_val = sp_fallback[0]
+                    self._select_selectpicker_option(sp_el, sp_label, sp_val)
+                    self.assert_table_contains(value, f"filter result for '{label}'")
 
         self.assert_table_contains(expected_text, "filtered result")
 

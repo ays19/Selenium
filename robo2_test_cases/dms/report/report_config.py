@@ -121,6 +121,19 @@ def filter_values(labels: list[str] | None = None) -> dict[str, str]:
     return resolved
 
 
+def direct_filter_values(labels: list[str] | None = None) -> dict[str, str]:
+    """Read only explicitly configured REPORT_FILTER_<LABEL> values (no fallback aliases)."""
+    if not labels:
+        return {}
+    resolved: dict[str, str] = {}
+    for label in labels:
+        env_key = _env_key_for_filter(label)
+        value = os.getenv(env_key, "").strip()
+        if value:
+            resolved[label] = value
+    return resolved
+
+
 def table_selector() -> str:
     return os.getenv("REPORT_TABLE_SELECTOR", "").strip()
 

@@ -45,6 +45,7 @@ from report.pages.requested_downloads_page import RequestedDownloadsPage
 from report.report_config import (  
     ReportConfigError,
     date_selectors,
+    direct_filter_values,
     expected_value,
     filter_values,
     get_profile,
@@ -342,14 +343,50 @@ class ReportSession:
         return f"Filtered by user '{selected}' ({len(rows)} row(s) visible)."
 
     def search_or_filter(
-        self, labels: list[str], expected_key: str = "REPORT_EXPECTED_FILTER_TEXT"
+        self,
+        labels: list[str],
+        expected_key: str = "REPORT_EXPECTED_FILTER_TEXT",
+        defaults: dict[str, str] | None = None,
+        default_expected: str = "",
     ) -> str:
-        expected_row = expected_value(expected_key) or expected_value("REPORT_EXPECTED_FILTER_TEXT")
-        if not expected_row:
-            raise BlockedTest(
-                f"Set {expected_key} (or REPORT_EXPECTED_FILTER_TEXT) in report/.env.report."
+        try:
+            filters_dict = filter_values(labels)
+            expected_row = (
+                expected_value(expected_key)
+                or default_expected
+                or expected_value("REPORT_EXPECTED_FILTER_TEXT")
             )
-        filters_dict = filter_values(labels)
+            if not expected_row:
+                raise BlockedTest(
+                    f"Set {expected_key} (or REPORT_EXPECTED_FILTER_TEXT) in report/.env.report."
+                )
+        except ReportConfigError as config_exc:
+            direct = direct_filter_values(labels)
+            discovered = self.report_page.discover_filter_values(labels)
+            filters_dict = {}
+            for label in labels:
+                if label in direct:
+                    filters_dict[label] = direct[label]
+                elif defaults and (defaults.get(label) or "").strip():
+                    filters_dict[label] = defaults[label].strip()
+                elif discovered.get(label):
+                    filters_dict[label] = discovered[label]
+                else:
+                    try:
+                        filters_dict[label] = filter_values([label])[label]
+                    except ReportConfigError as exc:
+                        raise config_exc from exc
+
+            expected_row = (
+                expected_value(expected_key)
+                or default_expected
+                or (list(filters_dict.values())[-1] if filters_dict else "")
+            )
+            if not expected_row:
+                raise BlockedTest(
+                    f"Set {expected_key} (or REPORT_EXPECTED_FILTER_TEXT) in report/.env.report."
+                )
+
         with self.step(f"Search/Filter report by: {', '.join(labels)}"):
             self.report_page.apply_label_filters(filters_dict, expected_row)
         return f"Searched/Filtered by {', '.join(labels)} and verified matching rows."
