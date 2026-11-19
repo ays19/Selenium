@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 import time
 
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -50,6 +50,8 @@ class ReportPage(BasePage):
         By.CSS_SELECTOR,
         "#filterToggle a, #filterToggle, .filter-toggler a, .filter-toggler",
     )
+    FILTER_PANEL_LOCATOR = (By.CSS_SELECTOR, "#filterActionItems")
+    SELECTPICKER_FILTER_SELECTOR = "#filterActionItems .bootstrap-select select.selectpicker"
     DATERANGE_INPUT_LOCATOR = (
         By.CSS_SELECTOR,
         "input[name='daterange'], input.date_input",
@@ -265,7 +267,12 @@ class ReportPage(BasePage):
                 return expected_text.casefold() in (chart.text or self.body_text()).casefold()
             return False
 
-        found = self.wait.until(expected_row_visible)
+        try:
+            found = self.wait.until(expected_row_visible)
+        except TimeoutException as exc:
+            raise AssertionError(
+                f"Expected {description} '{expected_text}' was not found in the report rows."
+            ) from exc
         if not found:
             raise AssertionError(
                 f"Expected {description} '{expected_text}' was not found in the report rows."
@@ -335,11 +342,181 @@ class ReportPage(BasePage):
                     return elem
         return None
 
+    def _open_filter_panel(self) -> None:
+        panels = self.driver.find_elements(*self.FILTER_PANEL_LOCATOR)
+        if not panels:
+            return
+        panel = panels[0]
+        classes = (panel.get_attribute("class") or "").split()
+        visible_toggles = self.visible_elements(
+            By.CSS_SELECTOR, "#filterActionItems .bootstrap-select button.dropdown-toggle"
+        )
+        if "close" not in classes and visible_toggles:
+            return
+
+        toggles = self.visible_elements(*self.FILTER_TOGGLE_LOCATOR)
+        if not toggles:
+            return
+        self.click(toggles[0])
+        try:
+            WebDriverWait(self.driver, 5).until(
+                lambda _d: "close" not in (panel.get_attribute("class") or "").split()
+                or bool(
+                    self.visible_elements(
+                        By.CSS_SELECTOR,
+                        "#filterActionItems .bootstrap-select button.dropdown-toggle",
+                    )
+                )
+            )
+        except TimeoutException:
+            pass
+
+    def _match_selectpicker_filters(
+        self, filters: dict[str, str]
+    ) -> list[tuple[object, str, str]] | None:
+        selects = self.driver.find_elements(
+            By.CSS_SELECTOR, self.SELECTPICKER_FILTER_SELECTOR
+        )
+        if not selects:
+            return None
+
+        metadata = self.driver.execute_script(
+            "return arguments[0].map(function(sel) {"
+            "  var wrap = sel.closest('.bootstrap-select');"
+            "  var btn = wrap ? wrap.querySelector('button.dropdown-toggle') : null;"
+            "  var firstOpt = sel.options && sel.options.length ? sel.options[0].textContent : '';"
+            "  return {"
+            "    id: sel.id || '',"
+            "    name: sel.name || '',"
+            "    dataId: btn ? (btn.getAttribute('data-id') || '') : '',"
+            "    title: btn ? (btn.getAttribute('title') || '') : '',"
+            "    firstOpt: firstOpt || ''"
+            "  };"
+            "});",
+            selects,
+        )
+
+        descriptors: list[tuple[int, object, str, set[str]]] = []
+        for idx, (sel, meta) in enumerate(zip(selects, metadata or [])):
+            raw = " ".join(
+                str(meta.get(k) or "")
+                for k in ("id", "name", "dataId", "title", "firstOpt")
+            )
+            desc = self.normalize(raw)
+            descriptors.append((idx, sel, desc, set(desc.split())))
+
+        used_indices: set[int] = set()
+        matched: list[tuple[int, object, str, str]] = []
+
+        for label, value in filters.items():
+            wanted = self.normalize(label)
+            terms = [wanted]
+            if wanted.startswith("all "):
+                terms.append(wanted[4:].strip())
+            for term in list(terms):
+                if term.endswith("s") and len(term) > 1:
+                    terms.append(term[:-1])
+            terms = [t for t in dict.fromkeys(terms) if t]
+
+            best_score = 0
+            best_entry = None
+            for entry in descriptors:
+                idx, _sel, desc, words = entry
+                if idx in used_indices:
+                    continue
+                score = 0
+                for term_rank, term in enumerate(terms):
+                    term_bonus = len(terms) - term_rank
+                    if desc == term:
+                        cand_score = 40 + term_bonus
+                    elif f" {term} " in f" {desc} " or term in words:
+                        cand_score = 30 + term_bonus
+                    elif term in desc:
+                        cand_score = 20 + term_bonus
+                    else:
+                        cand_score = 0
+                    if cand_score > score:
+                        score = cand_score
+                if score > best_score:
+                    best_score = score
+                    best_entry = entry
+
+            if best_entry is None:
+                return None
+            used_indices.add(best_entry[0])
+            matched.append((best_entry[0], best_entry[1], label, value))
+
+        matched.sort(key=lambda item: item[0])
+        return [(sel, label, value) for _idx, sel, label, value in matched]
+
+    def _select_selectpicker_option(self, select_el, label: str, value: str) -> str:
+        chosen = self.driver.execute_script(
+            "var sel = arguments[0], wanted = (arguments[1] || '').trim().toLowerCase();"
+            "var opts = Array.from(sel.options || []).map(function(o) {"
+            "  return {value: o.value, text: (o.textContent || '').trim()};"
+            "}).filter(function(o) { return wanted === '' || o.value !== ''; });"
+            "var match = opts.find(function(o) { return o.text.toLowerCase() === wanted; })"
+            "  || opts.find(function(o) { return o.text.toLowerCase().indexOf('(' + wanted + ')') !== -1; })"
+            "  || opts.find(function(o) { return o.text.toLowerCase().indexOf(wanted) !== -1; })"
+            "  || opts.find(function(o) { return o.value.toLowerCase() === wanted; });"
+            "return match || null;",
+            select_el,
+            value,
+        )
+        if not chosen:
+            raise LookupError(f"Option '{value}' not found in '{label}' filter dropdown.")
+
+        self.driver.execute_script(
+            "var sel = arguments[0], val = arguments[1];"
+            "if (window.jQuery && window.jQuery.fn && window.jQuery.fn.selectpicker) {"
+            "  window.jQuery(sel).selectpicker('val', val);"
+            "  window.jQuery(sel).trigger('change');"
+            "} else {"
+            "  sel.value = val;"
+            "  sel.dispatchEvent(new Event('change', {bubbles: true}));"
+            "  if (window.jQuery) window.jQuery(sel).trigger('change');"
+            "}",
+            select_el,
+            chosen["value"],
+        )
+        time.sleep(0.3)
+        self.wait_for_ajax_idle()
+        return chosen["text"]
+
     def apply_label_filters(self, filters: dict[str, str], expected_text: str) -> None:
         if not filters:
             raise LookupError("No filter field values were provided for this test case.")
         if not expected_text:
             raise LookupError("Expected filter result text is empty.")
+
+        selectpicker_matches = self._match_selectpicker_filters(filters)
+        if selectpicker_matches is not None:
+            all_selects = self.driver.find_elements(
+                By.CSS_SELECTOR, self.SELECTPICKER_FILTER_SELECTOR
+            )
+            targets = []
+            for select_el, label, value in selectpicker_matches:
+                el_id = select_el.get_attribute("id") or ""
+                dom_pos = all_selects.index(select_el) if select_el in all_selects else -1
+                targets.append((select_el, el_id, dom_pos, label, value))
+
+            self._open_filter_panel()
+            for select_el, el_id, dom_pos, label, value in targets:
+                target_el = select_el
+                try:
+                    _ = target_el.tag_name
+                except StaleElementReferenceException:
+                    if el_id:
+                        target_el = self.driver.find_element(By.ID, el_id)
+                    else:
+                        refreshed = self.driver.find_elements(
+                            By.CSS_SELECTOR, self.SELECTPICKER_FILTER_SELECTOR
+                        )
+                        if 0 <= dom_pos < len(refreshed):
+                            target_el = refreshed[dom_pos]
+                self._select_selectpicker_option(target_el, label, value)
+            self.assert_table_contains(expected_text, "filtered result")
+            return
 
         try:
             fallback = None
