@@ -14,10 +14,7 @@ SEARCH_LABELS = ["User"]
 def test_search_kpi_report(session: c.ReportSession) -> str:
     session.login_as_role("wf_admin")
     session.open_report(ROUTE)
-    return session.search_or_filter(
-        SEARCH_LABELS,
-        expected_key="REPORT_EXPECTED_FILTER_TEXT_KPI_REPORT",
-    )
+    return session.search_or_filter(SEARCH_LABELS, report_key="kpi_search")
 
 
 if __name__ == "__main__":

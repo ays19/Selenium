@@ -12,13 +12,13 @@ ROUTE = "/dms/dms_report/document_summary/"
 
 
 def test_document_summary_report(session: c.ReportSession) -> str:
-    # Document Summary renders a Chart.js <canvas> (no HTML table rows to text-match),
-    # so verify chart accessibility for both roles and the manager's "All Users" scope.
+    # Document Summary renders a Chart.js canvas; verify chart access for both roles
+    # and verify the manager sees the 'All Users' selector.
     session.login_as_role("dms_report_manager")
     session.open_report(ROUTE)
     manager_msg = session.verify_scope("accessible")
-    if "all users" not in session.report_page.body_text().casefold():
-        raise AssertionError("Expected 'All Users' selector on manager's Document Summary Report.")
+    with session.step("Verify manager sees 'All Users' selector"):
+        session.report_page.assert_page_contains("All Users", "manager scope selector")
 
     session.login_as_role("dms_user")
     session.open_report(ROUTE)

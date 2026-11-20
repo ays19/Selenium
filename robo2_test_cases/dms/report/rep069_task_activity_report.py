@@ -14,10 +14,7 @@ FILTER_LABELS = ["User"]
 def test_filter_task_activity_report(session: c.ReportSession) -> str:
     session.login_as_role("wf_admin")
     session.open_report(ROUTE)
-    return session.search_or_filter(
-        FILTER_LABELS,
-        expected_key="REPORT_EXPECTED_FILTER_TEXT_TASK_ACTIVITY_REPORT",
-    )
+    return session.search_or_filter(FILTER_LABELS, report_key="task_activity")
 
 
 if __name__ == "__main__":

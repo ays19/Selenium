@@ -13,10 +13,7 @@ ROUTE = "/workflow/workflow_report/kpi/"
 def test_date_range_kpi_report(session: c.ReportSession) -> str:
     session.login_as_role("wf_admin")
     session.open_report(ROUTE)
-    return session.filter_by_date(
-        expected_key="REPORT_EXPECTED_DATE_TEXT_KPI_REPORT",
-        default_expected="*",
-    )
+    return session.filter_by_date()
 
 
 if __name__ == "__main__":

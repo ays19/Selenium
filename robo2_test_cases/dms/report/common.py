@@ -1,12 +1,15 @@
 """
-Clean POM + Allure + Excel foundation for the Robo2mation Report test suite.
-- Uses Page Object Model: LoginPage(BasePage), ReportPage, RequestedDownloadsPage
-- Uses AllureReporter for step logging, screenshots, and in-memory failure DOM/tracebacks
-- Saves screenshots to SCREENSHOT_DIR and links them in the Report Excel worksheet
+Core POM + Data-Driven + Allure + Excel test harness for the Report test suite.
+
+Architecture:
+- pages/           -> Selenium Page Object Model classes (LoginPage, ReportPage, RequestedDownloadsPage)
+- report_config.py -> Loads credentials & runtime settings from .env.report
+- report_data.py   -> Data-driven search/filter inputs, expected texts, and rolling date range
+- allure_reporter.py -> Allure 2 step logging and attachments
+- common.py        -> ReportSession facade, browser factory, screenshots, Excel reporting, and test runner
 """
 from __future__ import annotations
 
-from contextlib import nullcontext
 from datetime import datetime
 import os
 from pathlib import Path
@@ -14,48 +17,48 @@ import sys
 import traceback
 from typing import Callable, Sequence
 
-# Ensure both `dms/` and `dms/report/` are on sys.path
+# Ensure both `dms/report/` and `dms/` are importable regardless of working directory
 REPORT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = REPORT_DIR.parent
 for _p in (str(REPORT_DIR), str(PROJECT_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from allure_commons.types import AttachmentType  
-from allure_commons.utils import uuid4  
-from dotenv import load_dotenv  
-import openpyxl  
-from selenium import webdriver  
-from selenium.common.exceptions import (  
+from allure_commons.types import AttachmentType  # noqa: E402
+from allure_commons.utils import uuid4  # noqa: E402
+import openpyxl  # noqa: E402
+from selenium import webdriver  # noqa: E402
+from selenium.common.exceptions import (  # noqa: E402
     NoSuchElementException,
     StaleElementReferenceException,
-    TimeoutException,
 )
-from selenium.webdriver.chrome.options import Options  
-from selenium.webdriver.common.by import By  
-from selenium.webdriver.common.keys import Keys  
-from selenium.webdriver.remote.webdriver import WebDriver  
-from selenium.webdriver.support import expected_conditions as EC  
-from selenium.webdriver.support.ui import WebDriverWait  
+from selenium.webdriver.chrome.options import Options  # noqa: E402
+from selenium.webdriver.remote.webdriver import WebDriver  # noqa: E402
+from selenium.webdriver.support.ui import WebDriverWait  # noqa: E402
 
-from report.allure_reporter import AllureReporter  
-from report.pages.base_page import BasePage  
-from report.pages.report_page import ReportPage  
-from report.pages.requested_downloads_page import RequestedDownloadsPage  
-from report.report_config import (  
+from report.allure_reporter import AllureReporter  # noqa: E402
+from report.pages.login_page import LoginError, LoginPage  # noqa: E402
+from report.pages.report_page import ReportPage  # noqa: E402
+from report.pages.requested_downloads_page import RequestedDownloadsPage  # noqa: E402
+from report.report_config import (  # noqa: E402
     ReportConfigError,
     date_selectors,
-    direct_filter_values,
-    expected_value,
-    filter_values,
     get_profile,
+    is_headless,
     table_selector,
 )
+from report.report_data import (  # noqa: E402
+    DEFAULT_DATE_RANGE_DAYS,
+    DEFAULT_DOC_TYPE,
+    EXPECTED_DOWNLOAD_TEXT,
+    expected_scope_texts,
+    get_date_range,
+    get_filter_data,
+)
 
-# 1. Configuration & Directories
-
-load_dotenv(PROJECT_ROOT / ".env", override=False)
-load_dotenv(REPORT_DIR / ".env.report", override=False)
+# =============================================================================
+# 1. Runtime Paths & Settings (loaded once via report_config)
+# =============================================================================
 
 BASE_URL: str = (os.getenv("BASE_URL") or "").rstrip("/")
 TESTER_NAME: str = os.getenv("TESTER_NAME") or ""
@@ -82,113 +85,19 @@ _LAST_SAVED_SHOTS: dict[str, list[str]] = {}
 
 
 class SetupError(RuntimeError):
-    """Raised when login, browser initialization, or test setup fails."""
+    """Raised when browser startup, Excel setup, or login fails."""
 
 
 class BlockedTest(RuntimeError):
-    """Raised when required role credentials or test data are missing in .env.report."""
+    """Raised when required test data or credentials are missing."""
 
 
-# 2. Page Object Model: LoginPage
-
-class LoginPage(BasePage):
-    """Page Object handling authentication and user session switching."""
-
-    USERNAME_INPUT = (By.XPATH, "//input[contains(@placeholder, 'Username')]")
-    PASSWORD_INPUT = (By.XPATH, "//input[contains(@placeholder, 'Password')]")
-    MESSAGE_SELECTORS = (
-        ".toast, .alert, .swal2-popup, [role='alert'], .snackbar, "
-        ".Toastify__toast, .ant-message, .growl-animated, [data-notify]"
-    )
-    LOGOUT_ROUTE = "/login/logout/"
-
-    def __init__(
-        self,
-        driver: WebDriver,
-        wait: WebDriverWait,
-        base_url: str = BASE_URL,
-        reporter: AllureReporter | None = None,
-    ):
-        super().__init__(driver, wait)
-        self.base_url = (base_url or BASE_URL).rstrip("/")
-        self.reporter = reporter
-
-    def _step(self, title: str):
-        if self.reporter and self.reporter.test_uuid:
-            return self.reporter.step(title)
-        return nullcontext()
-
-    def is_login_page_displayed(self, timeout: int = 5) -> bool:
-        try:
-            WebDriverWait(self.driver, timeout).until(
-                EC.visibility_of_element_located(self.USERNAME_INPUT)
-            )
-            return True
-        except TimeoutException:
-            return False
-
-    def clear_session(self) -> None:
-        try:
-            self.driver.delete_all_cookies()
-            self.driver.execute_script(
-                "window.localStorage.clear(); window.sessionStorage.clear();"
-            )
-        except Exception:
-            pass
-
-    def get_popup_message(self) -> str:
-        messages = [
-            el.text.strip()
-            for el in self.visible_elements(By.CSS_SELECTOR, self.MESSAGE_SELECTORS)
-            if el.text.strip()
-        ]
-        return " | ".join(messages)
-
-    def login_as(self, username: str, password: str) -> None:
-        if not self.base_url:
-            raise SetupError("BASE_URL is not configured in .env.")
-
-        with self._step(f"Sign in as user '{username}'"):
-            self.driver.get(self.base_url)
-            if not self.is_login_page_displayed(timeout=5):
-                self.clear_session()
-                self.driver.get(self.base_url)
-
-            user_field = self.wait.until(
-                EC.visibility_of_element_located(self.USERNAME_INPUT)
-            )
-            user_field.clear()
-            user_field.send_keys(username)
-
-            pass_field = self.driver.find_element(*self.PASSWORD_INPUT)
-            pass_field.clear()
-            pass_field.send_keys(password, Keys.ENTER)
-
-            try:
-                self.wait.until(EC.invisibility_of_element_located(self.USERNAME_INPUT))
-            except TimeoutException as exc:
-                popup = self.get_popup_message() or "no error banner shown"
-                raise SetupError(
-                    f"Login as '{username}' failed. Check report/.env.report. Page message: {popup}"
-                ) from exc
-
-    def logout(self) -> None:
-        with self._step("Log out of current session"):
-            self.driver.get(f"{self.base_url}{self.LOGOUT_ROUTE}")
-            if not self.is_login_page_displayed(timeout=5):
-                self.clear_session()
-                self.driver.get(self.base_url)
-
-    def switch_user(self, username: str, password: str) -> None:
-        with self._step(f"Switch session to user '{username}'"):
-            self.logout()
-            self.login_as(username, password)
-
-
-# 3. POM + Allure Test Session Facade (ReportSession)
+# =============================================================================
+# 2. High-Level POM + Allure Test Session (used by repXXX_*.py scripts)
+# =============================================================================
 
 class ReportSession:
-    """High-level POM + Allure facade used by individual repXXX_*.py test scripts."""
+    """High-level facade combining Page Objects, test data, and Allure steps."""
 
     def __init__(self, driver: WebDriver, wait: WebDriverWait, reporter: AllureReporter):
         self.driver = driver
@@ -220,201 +129,157 @@ class ReportSession:
                 self.report_page.assert_accessible()
 
     def select_document_type(self, doc_type: str = "") -> str:
-        target = (
-            doc_type
-            or expected_value("REPORT_FILTER_DOCUMENT_TYPE")
-            or os.getenv("DOC_TYPE", "").strip()
-            or "aa"
-        )
+        target = (doc_type or DEFAULT_DOC_TYPE).strip()
+        if not target:
+            raise BlockedTest("DEFAULT_DOC_TYPE is not set in report_data.py.")
         with self.step(f"Select Document Type: '{target}'"):
             self.report_page.select_document_type(target)
         return target
 
+    def verify_has_rows(self, context: str = "") -> str:
+        label = context or f"role '{self.current_role}'"
+        with self.step(f"Verify report rows are loaded for {label}"):
+            count = self.report_page.assert_has_rows(label)
+        return f"Role '{self.current_role}': report loaded with {count} row(s)."
+
+    def verify_document_type_rows(self, doc_type: str = "", verify_text: bool = False) -> str:
+        target = self.select_document_type(doc_type)
+        with self.step(f"Verify filtered rows for Document Type '{target}'"):
+            count = self.report_page.assert_has_rows(f"doc-type '{target}'")
+            if verify_text:
+                self.report_page.assert_table_contains(target, "Document Type filtered result")
+        return (
+            f"Role '{self.current_role}': verified Document Type '{target}' "
+            f"({count} row(s) visible)."
+        )
+
+    def verify_columns(self, expected_columns: list[str]) -> str:
+        with self.step(f"Verify report columns: {', '.join(expected_columns)}"):
+            self.report_page.assert_headers_present(expected_columns)
+        return f"Verified columns: {', '.join(expected_columns)}."
+
     def verify_scope(self, visibility: str, role_key: str = "") -> str:
-        role = (role_key or self.current_role).upper()
+        role = (role_key or self.current_role).strip().lower()
         with self.step(f"Verify report visibility scope: '{visibility}'"):
             if visibility == "denied":
                 self.report_page.assert_denied()
-                return f"Role '{role.lower()}': access denied as expected."
+                return f"Role '{role}': access denied as expected."
 
             self.report_page.assert_accessible()
             if visibility == "accessible":
-                return f"Role '{role.lower()}': report is accessible and table loaded."
+                return f"Role '{role}': report is accessible and loaded."
 
-            key_map = {
-                "own": "REPORT_EXPECTED_OWN_TEXT",
-                "all": "REPORT_EXPECTED_OTHER_TEXT",
-                "related": "REPORT_EXPECTED_RELATED_TEXT",
-                "department": "REPORT_EXPECTED_DEPARTMENT_TEXT",
-            }
-            base_key = key_map.get(visibility)
-            if not base_key:
-                return f"Role '{role.lower()}': report access verified."
-
-            expected = expected_value(f"{base_key}_{role}") or expected_value(base_key)
-            if not expected:
-                raise BlockedTest(
-                    f"Set {base_key}_{role} (or {base_key}) in report/.env.report to verify '{visibility}' scope."
-                )
-
-            self.report_page.assert_table_contains(expected, f"{visibility}-scope record")
+            own_text, other_text = expected_scope_texts(role)
 
             if visibility == "own":
-                other = (
-                    expected_value(f"REPORT_EXPECTED_OTHER_TEXT_{role}")
-                    or expected_value("REPORT_EXPECTED_OTHER_TEXT")
-                )
-                if not other:
+                if not own_text or not other_text:
                     raise BlockedTest(
-                        "Set REPORT_EXPECTED_OTHER_TEXT in report/.env.report to verify restricted rows."
+                        "Set REPORT_USERNAME and REPORT_MANAGER_USERNAME in .env.report."
                     )
+                self.report_page.assert_table_contains(own_text, "own-scope record")
                 self.report_page.assert_table_not_contains(
-                    other, "another user's record", allow_with_text=expected
+                    other_text, "another user's record", allow_with_text=own_text
                 )
-                return f"Role '{role.lower()}': sees own record ('{expected}') and cannot see '{other}'."
+                return f"Role '{role}': sees own record ('{own_text}') and cannot see '{other_text}'."
 
-            return f"Role '{role.lower()}': verified '{visibility}' record ('{expected}')."
+            if visibility == "all":
+                if not other_text:
+                    raise BlockedTest(
+                        f"Configure ROLE_EXPECTED_ALL_TEXT for '{role}' in report_data.py."
+                    )
+                self.report_page.assert_table_contains(other_text, "all-users record")
+                return f"Role '{role}': verified all-users record ('{other_text}')."
+
+            return f"Role '{role}': report access verified."
 
     def verify_user_dropdown_scope(self, visibility: str) -> str:
-        """Verify scope on reports where the user is selected via dropdown rather than a table column."""
-        self.report_page.assert_accessible()
-        table = self.report_page.report_table(timeout=10)
-        rows = table.find_elements(*self.report_page.TABLE_BODY_ROW_LOCATOR) if table else []
-        if not rows:
-            raise AssertionError(f"Expected report rows for '{self.current_role}', but table was empty.")
+        """Verify scope on reports where the user filter is a dropdown instead of a table column."""
+        with self.step(f"Verify user dropdown visibility scope: '{visibility}'"):
+            count = self.report_page.assert_has_rows(f"role '{self.current_role}'")
+            dropdown_text = self.report_page.user_dropdown_options_text()
+            page_text = self.report_page.body_text().casefold()
+            own_text, other_text = expected_scope_texts(self.current_role)
 
-        dropdown_text = " ".join(
-            (el.get_attribute("textContent") or "")
-            for el in self.driver.find_elements(By.CSS_SELECTOR, "select option")
-        ).casefold()
-        page_text = self.report_page.body_text().casefold()
+            if visibility == "own":
+                if own_text.casefold() not in dropdown_text and own_text.casefold() not in page_text:
+                    raise AssertionError(f"Expected own user '{own_text}' on the report.")
+                if other_text.casefold() in dropdown_text or other_text.casefold() in page_text:
+                    raise AssertionError(
+                        f"Unexpected other user '{other_text}' was accessible to '{self.current_role}'."
+                    )
+                return (
+                    f"Role '{self.current_role}': sees own records for '{own_text}' "
+                    f"({count} row(s)) and cannot access '{other_text}'."
+                )
 
-        if visibility == "own":
-            own = expected_value("REPORT_EXPECTED_OWN_TEXT") or "ahsan"
-            other = expected_value("REPORT_EXPECTED_OTHER_TEXT") or "nahif"
-            if own.casefold() not in dropdown_text and own.casefold() not in page_text:
-                raise AssertionError(f"Expected own user '{own}' on the report.")
-            if other.casefold() in dropdown_text or other.casefold() in page_text:
-                raise AssertionError(f"Unexpected other user '{other}' was accessible to '{self.current_role}'.")
-            return f"Role '{self.current_role}': sees own records for '{own}' ({len(rows)} row(s)) and cannot access '{other}'."
-
-        other = (
-            expected_value(f"REPORT_EXPECTED_OTHER_TEXT_{self.current_role.upper()}")
-            or expected_value("REPORT_EXPECTED_OWN_TEXT")
-            or "ahsan"
-        )
-        if other.casefold() not in dropdown_text:
-            raise AssertionError(f"Expected user '{other}' in user dropdown for '{self.current_role}'.")
-        return f"Role '{self.current_role}': accessed report ({len(rows)} row(s)) with all-users selector including '{other}'."
+            if other_text.casefold() not in dropdown_text:
+                raise AssertionError(
+                    f"Expected user '{other_text}' in user dropdown for '{self.current_role}'."
+                )
+            return (
+                f"Role '{self.current_role}': accessed report ({count} row(s)) "
+                f"with all-users selector including '{other_text}'."
+            )
 
     def filter_by_user(self, username: str = "") -> str:
-        """Select a user from the report's user <select> dropdown and verify table rows load."""
-        target = (
-            username
-            or expected_value(f"REPORT_EXPECTED_OTHER_TEXT_{self.current_role.upper()}")
-            or expected_value("REPORT_EXPECTED_OWN_TEXT")
-            or "ahsan"
-        )
-        with self.step(f"Filter by user '{target}'"):
-            selected = self.driver.execute_script(
-                "var wanted = arguments[0].toLowerCase();"
-                "var selects = document.querySelectorAll('select');"
-                "for (var s of selects) {"
-                "  if (s.closest('.dataTables_length')) continue;"
-                "  var opts = Array.from(s.options);"
-                "  var match = opts.find(o => (o.textContent || '').toLowerCase().includes('(' + wanted + ')'))"
-                "           || opts.find(o => (o.textContent || '').toLowerCase().includes(wanted));"
-                "  if (match) {"
-                "    s.value = match.value;"
-                "    s.dispatchEvent(new Event('change', {bubbles: true}));"
-                "    if (window.jQuery) window.jQuery(s).trigger('change');"
-                "    return match.textContent.trim();"
-                "  }"
-                "}"
-                "return null;",
-                target,
-            )
-            if not selected:
-                raise LookupError(f"User '{target}' was not found in the user filter dropdown.")
-            self.report_page.wait_for_ajax_idle()
-            self.report_page.assert_accessible()
-            table = self.report_page.report_table(timeout=10)
-            rows = table.find_elements(*self.report_page.TABLE_BODY_ROW_LOCATOR) if table else []
-            if not rows:
-                raise AssertionError(f"Expected filtered rows for user '{selected}', but table was empty.")
-        return f"Filtered by user '{selected}' ({len(rows)} row(s) visible)."
+        """Select a user from the report's user dropdown and verify filtered rows load."""
+        _own, other = expected_scope_texts(self.current_role)
+        target = (username or other or _own).strip()
+        if not target:
+            raise BlockedTest("No target username available for user filter.")
+
+        with self.step(f"Filter report by user '{target}'"):
+            selected = self.report_page.select_user_from_dropdown(target)
+            count = self.report_page.assert_has_rows(f"user '{selected}'")
+        return f"Filtered by user '{selected}' ({count} row(s) visible)."
 
     def search_or_filter(
         self,
         labels: list[str],
-        expected_key: str = "REPORT_EXPECTED_FILTER_TEXT",
-        defaults: dict[str, str] | None = None,
-        default_expected: str = "",
+        report_key: str = "",
+        expected_text: str = "",
     ) -> str:
-        try:
-            filters_dict = filter_values(labels)
-            expected_row = (
-                expected_value(expected_key)
-                or default_expected
-                or expected_value("REPORT_EXPECTED_FILTER_TEXT")
-            )
-            if not expected_row:
-                raise BlockedTest(
-                    f"Set {expected_key} (or REPORT_EXPECTED_FILTER_TEXT) in report/.env.report."
-                )
-        except ReportConfigError as config_exc:
-            direct = direct_filter_values(labels)
-            discovered = self.report_page.discover_filter_values(labels)
-            filters_dict = {}
-            for label in labels:
-                if label in direct:
-                    filters_dict[label] = direct[label]
-                elif defaults and (defaults.get(label) or "").strip():
-                    filters_dict[label] = defaults[label].strip()
-                elif discovered.get(label):
-                    filters_dict[label] = discovered[label]
-                else:
-                    try:
-                        filters_dict[label] = filter_values([label])[label]
-                    except ReportConfigError as exc:
-                        raise config_exc from exc
+        """Apply data-driven search/filter values from report_data.py (with live discovery for dynamic IDs)."""
+        filters_dict, data_expected = get_filter_data(report_key, labels)
 
-            expected_row = (
-                expected_value(expected_key)
-                or default_expected
-                or (list(filters_dict.values())[-1] if filters_dict else "")
+        missing_labels = [lbl for lbl in labels if lbl not in filters_dict]
+        if missing_labels:
+            discovered = self.report_page.discover_filter_values(missing_labels)
+            for lbl in missing_labels:
+                if discovered.get(lbl):
+                    filters_dict[lbl] = discovered[lbl]
+
+        still_missing = [lbl for lbl in labels if lbl not in filters_dict]
+        if still_missing:
+            raise BlockedTest(
+                f"Missing filter values for {still_missing}. Add them to REPORT_FILTERS['{report_key}'] in report_data.py."
             )
-            if not expected_row:
-                raise BlockedTest(
-                    f"Set {expected_key} (or REPORT_EXPECTED_FILTER_TEXT) in report/.env.report."
-                )
+
+        ordered_filters = {lbl: filters_dict[lbl] for lbl in labels}
+        expected_row = (expected_text or data_expected).strip()
 
         with self.step(f"Search/Filter report by: {', '.join(labels)}"):
-            self.report_page.apply_label_filters(filters_dict, expected_row)
+            self.report_page.apply_label_filters(ordered_filters, expected_row)
         return f"Searched/Filtered by {', '.join(labels)} and verified matching rows."
 
     def filter_by_date(
         self,
-        expected_key: str = "REPORT_EXPECTED_DATE_TEXT",
-        default_expected: str = "",
+        days_back: int = DEFAULT_DATE_RANGE_DAYS,
+        expected_text: str = "",
     ) -> str:
-        date_from = expected_value("REPORT_DATE_FROM")
-        date_to = expected_value("REPORT_DATE_TO")
-        expected_row = (
-            expected_value(expected_key)
-            or default_expected
-            or expected_value("REPORT_EXPECTED_DATE_TEXT")
-        )
-        if not date_from or not date_to or not expected_row:
-            raise BlockedTest(
-                "Set REPORT_DATE_FROM, REPORT_DATE_TO, and REPORT_EXPECTED_DATE_TEXT in report/.env.report."
-            )
+        """Apply a rolling date range and verify visible table dates fall within the range."""
+        date_from, date_to = get_date_range(days_back)
         from_sel, to_sel = date_selectors()
+
         with self.step(f"Filter by date range ({date_from} to {date_to})"):
             self.report_page.apply_date_range(
-                date_from, date_to, expected_row, from_selector=from_sel, to_selector=to_sel
+                date_from,
+                date_to,
+                expected_text=expected_text,
+                from_selector=from_sel,
+                to_selector=to_sel,
             )
-        return f"Applied date range ({date_from} to {date_to}) and verified '{expected_row}'."
+        return f"Applied date range ({date_from} to {date_to}) and verified results."
 
     def sort_by(self, columns: list[str]) -> str:
         with self.step(f"Sort report columns: {', '.join(columns)}"):
@@ -429,12 +294,13 @@ class ReportSession:
     ) -> str:
         download_dir = Path(DOWNLOAD_DIR)
         if page_sizes:
-            with self.step(f"Test page sizes: {', '.join(page_sizes)}"):
+            with self.step(f"Verify page sizes: {', '.join(page_sizes)}"):
                 for size in page_sizes:
                     self.report_page.choose_page_size(size.strip())
 
         downloaded: list[Path] = []
         queued_download = False
+
         with self.step(f"Execute export actions: {', '.join(actions)}"):
             for action in actions:
                 before = {p.name for p in download_dir.glob("*") if p.is_file()}
@@ -443,15 +309,18 @@ class ReportSession:
                         "window.__reportPrintCalled=false; "
                         "window.print=function(){window.__reportPrintCalled=true;};"
                     )
+
                 self.report_page.click_action(action)
+
                 if action.casefold() in {"csv", "excel"}:
                     ext = ".csv" if action.casefold() == "csv" else ".xlsx"
                     try:
-                        file_path = self.report_page.wait_for_download_or_queued(
+                        file_path = self.report_page.wait_for_download(
                             download_dir,
                             before,
                             ext,
                             timeout=12 if requested_download else 30,
+                            allow_queued=True,
                         )
                         if file_path is None:
                             queued_download = True
@@ -462,9 +331,7 @@ class ReportSession:
                             raise
                 elif action.casefold() == "print":
                     self.wait.until(
-                        lambda d: bool(
-                            d.execute_script("return window.__reportPrintCalled === true")
-                        )
+                        lambda d: bool(d.execute_script("return window.__reportPrintCalled === true"))
                     )
                 elif action.casefold() == "copy":
                     self.report_page.assert_accessible()
@@ -473,16 +340,16 @@ class ReportSession:
         if verify_requested:
             with self.step("Verify entry in Requested Downloads page"):
                 self.downloads_page.open(REQUESTED_DOWNLOAD_URL)
-                self.downloads_page.assert_download_request_visible(
-                    expected_value("REPORT_EXPECTED_DOWNLOAD_TEXT")
-                )
+                self.downloads_page.assert_download_request_visible(EXPECTED_DOWNLOAD_TEXT)
 
         files_info = f" Downloaded: {', '.join(p.name for p in downloaded)}." if downloaded else ""
         req_info = " Verified in Requested Downloads." if verify_requested else ""
         return f"Completed export actions ({', '.join(actions)}).{files_info}{req_info}"
 
 
-# 4. Browser, Screenshot, Allure & Excel Utilities
+# =============================================================================
+# 3. Browser, Screenshot & Allure Utilities
+# =============================================================================
 
 def create_allure_reporter() -> AllureReporter:
     return AllureReporter(ALLURE_RESULTS_DIR)
@@ -498,8 +365,14 @@ def start_browser(timeout: int = 15) -> tuple[WebDriver, WebDriverWait]:
             "profile.default_content_setting_values.automatic_downloads": 1,
         },
     )
+    if is_headless():
+        options.add_argument("--headless=new")
+        options.add_argument("--window-size=1920,1080")
+
     driver = webdriver.Chrome(options=options)
-    driver.maximize_window()
+    if not is_headless():
+        driver.maximize_window()
+
     wait = WebDriverWait(
         driver,
         timeout,
@@ -561,10 +434,9 @@ def short(error: BaseException) -> str:
     if not first:
         try:
             frames = [
-                f
-                for f in traceback.extract_tb(error.__traceback__)
+                f for f in traceback.extract_tb(error.__traceback__)
                 if "site-packages" not in f.filename
-                and f.name not in ("run_report_case", "run_report_test", "<module>", "<lambda>")
+                and f.name not in ("run_report_test", "<module>", "<lambda>")
             ]
             if frames:
                 chain = " > ".join(f.name for f in frames)
@@ -574,7 +446,9 @@ def short(error: BaseException) -> str:
     return f"{type(error).__name__}: {first}"
 
 
-# 5. Excel Validation & Result Reporting
+# =============================================================================
+# 4. Excel Validation & Result Reporting
+# =============================================================================
 
 def _active_excel_and_sheet() -> tuple[str, str]:
     raw_excel = os.environ.get("EXCEL_PATH") or EXCEL_PATH
@@ -598,7 +472,7 @@ def _find_row_and_columns(ws, test_case_id: str) -> tuple[int | None, dict[str, 
             break
         headers.clear()
 
-    def col_of(*keywords: str) -> int | None:
+    def _col_of(*keywords: str) -> int | None:
         for kw in keywords:
             for col, text in headers.items():
                 if kw in text:
@@ -606,20 +480,17 @@ def _find_row_and_columns(ws, test_case_id: str) -> tuple[int | None, dict[str, 
         return None
 
     columns = {
-        "actual": col_of("actual"),
-        "status": col_of("status"),
-        "evidence": col_of(
-            EVIDENCE_HEADER, "remark", "evidence", "screenshot", "screen shot"
-        ),
-        "date": col_of("date"),
-        "tester": col_of("tester"),
+        "actual": _col_of("actual"),
+        "status": _col_of("status"),
+        "evidence": _col_of(EVIDENCE_HEADER, "remark", "evidence", "screenshot", "screen shot"),
+        "date": _col_of("date"),
+        "tester": _col_of("tester"),
     }
 
     target_id = str(test_case_id).strip().lower()
     target_row = next(
         (
-            r
-            for r in range(1, ws.max_row + 1)
+            r for r in range(1, ws.max_row + 1)
             if str(ws.cell(r, 1).value or "").strip().lower() == target_id
         ),
         None,
@@ -642,7 +513,6 @@ def _resolve_latest_screenshot(
 
     if not valid:
         return None
-
     fail_shots = [p for p in valid if "_FAIL.png" in p]
     return fail_shots[-1] if fail_shots else valid[-1]
 
@@ -705,7 +575,9 @@ def write_result(
     print(f"Saved to: {os.path.abspath(excel_path)}  (sheet '{ws.title}', row {row})")
 
 
-# 6. Unified POM Test Runner (Used by repXXX_*.py scripts)
+# =============================================================================
+# 5. Unified Test Runner (called by every repXXX_*.py script)
+# =============================================================================
 
 def _parse_docstring(doc: str | None, fallback_title: str) -> tuple[str, str]:
     lines = [line.strip() for line in (doc or "").strip().splitlines() if line.strip()]
@@ -731,15 +603,12 @@ def run_report_test(
     os.environ["SHEET_NAME"] = "Report"
 
     title, description = _parse_docstring(doc or test_fn.__doc__, test_case_id)
-    feature_name = feature or title
-
     reporter = create_allure_reporter()
     reporter.start_test(
-        test_case_id, title, feature_name, description, f"{BASE_URL}{route}"
+        test_case_id, title, feature or title, description, f"{BASE_URL}{route}"
     )
 
     driver = None
-    wait = None
     status = "failed"
     excel_status = "Fail"
     actual = ""
@@ -768,23 +637,19 @@ def run_report_test(
         actual = f"Blocked - {exc}"
         if driver:
             try:
-                shot_paths.append(
-                    save_shot(driver, test_case_id, "report", "BLOCKED", reporter)
-                )
+                shot_paths.append(save_shot(driver, test_case_id, "report", "BLOCKED", reporter))
             except Exception:
                 pass
         reporter.attach_text(actual, "Execution prerequisite")
 
-    except (SystemExit, SetupError) as exc:
+    except (SystemExit, SetupError, LoginError) as exc:
         error = exc
         actual = f"Setup failed - {short(exc)}"
         status = "broken"
         excel_status = "Fail"
         if driver:
             try:
-                shot_paths.append(
-                    save_shot(driver, test_case_id, "setup", "FAIL", reporter)
-                )
+                shot_paths.append(save_shot(driver, test_case_id, "setup", "FAIL", reporter))
             except Exception:
                 pass
         attach_failure_diagnostics(driver, traceback.format_exc(), reporter)
@@ -796,9 +661,7 @@ def run_report_test(
         excel_status = "Fail"
         if driver:
             try:
-                shot_paths.append(
-                    save_shot(driver, test_case_id, "report", "FAIL", reporter)
-                )
+                shot_paths.append(save_shot(driver, test_case_id, "report", "FAIL", reporter))
             except Exception:
                 pass
         attach_failure_diagnostics(driver, traceback.format_exc(), reporter)

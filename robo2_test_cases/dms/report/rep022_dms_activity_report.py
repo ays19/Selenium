@@ -14,10 +14,7 @@ FILTER_LABELS = ["All Operation", "All Users"]
 def test_filter_dms_activity_report(session: c.ReportSession) -> str:
     session.login_as_role("dms_report_manager")
     session.open_report(ROUTE)
-    return session.search_or_filter(
-        FILTER_LABELS,
-        expected_key="REPORT_EXPECTED_FILTER_TEXT_DMS_ACTIVITY_REPORT",
-    )
+    return session.search_or_filter(FILTER_LABELS, report_key="dms_activity_filter")
 
 
 if __name__ == "__main__":

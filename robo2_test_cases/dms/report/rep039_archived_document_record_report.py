@@ -15,13 +15,8 @@ def test_search_archived_document_record_report(session: c.ReportSession) -> str
     session.login_as_role("dms_report_manager")
     session.open_report(ROUTE)
     session.select_document_type()
-    return session.search_or_filter(
-        SEARCH_LABELS,
-        expected_key="REPORT_EXPECTED_FILTER_TEXT_ARCHIVED_DOCUMENT_RECORD_REPORT",
-    )
+    return session.search_or_filter(SEARCH_LABELS, report_key="archived_document_record")
 
 
 if __name__ == "__main__":
-    c.run_report_test(
-        TEST_CASE_ID, ROUTE, test_search_archived_document_record_report, __doc__
-    )
+    c.run_report_test(TEST_CASE_ID, ROUTE, test_search_archived_document_record_report, __doc__)

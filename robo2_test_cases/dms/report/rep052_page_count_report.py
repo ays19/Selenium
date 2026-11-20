@@ -13,10 +13,7 @@ ROUTE = "/dms/dms_report/page_counts/"
 def test_date_range_page_count_report(session: c.ReportSession) -> str:
     session.login_as_role("dms_report_manager")
     session.open_report(ROUTE)
-    return session.filter_by_date(
-        expected_key="REPORT_EXPECTED_DATE_TEXT_PAGE_COUNT_REPORT",
-        default_expected="*",
-    )
+    return session.filter_by_date()
 
 
 if __name__ == "__main__":

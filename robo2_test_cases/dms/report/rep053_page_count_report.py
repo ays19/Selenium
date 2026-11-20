@@ -14,10 +14,7 @@ FILTER_LABELS = ["Document Type"]
 def test_filter_page_count_report(session: c.ReportSession) -> str:
     session.login_as_role("dms_report_manager")
     session.open_report(ROUTE)
-    return session.search_or_filter(
-        FILTER_LABELS,
-        expected_key="REPORT_EXPECTED_FILTER_TEXT_PAGE_COUNT_REPORT",
-    )
+    return session.search_or_filter(FILTER_LABELS, report_key="page_count")
 
 
 if __name__ == "__main__":

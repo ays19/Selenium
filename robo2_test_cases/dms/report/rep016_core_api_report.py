@@ -13,10 +13,7 @@ ROUTE = "/report/published-api-report/"
 def test_date_range_core_api_report(session: c.ReportSession) -> str:
     session.login_as_role("core_report_manager")
     session.open_report(ROUTE)
-    return session.filter_by_date(
-        expected_key="REPORT_EXPECTED_DATE_TEXT_CORE_API_REPORT",
-        default_expected="*",
-    )
+    return session.filter_by_date()
 
 
 if __name__ == "__main__":

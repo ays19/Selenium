@@ -15,20 +15,8 @@ def test_all_page_count_report(session: c.ReportSession) -> str:
     session.login_as_role("dms_report_manager")
     session.open_report(ROUTE)
     scope_msg = session.verify_scope("accessible")
-
-    with session.step(
-        f"Verify Page Count Report columns: {', '.join(EXPECTED_COLUMNS)}"
-    ):
-        header_text = session.report_page.body_text().casefold()
-        missing = [
-            col for col in EXPECTED_COLUMNS if col.casefold() not in header_text
-        ]
-        if missing:
-            raise AssertionError(
-                f"Missing expected Page Count Report columns: {missing}"
-            )
-
-    return f"{scope_msg} Verified columns: {', '.join(EXPECTED_COLUMNS)}."
+    cols_msg = session.verify_columns(EXPECTED_COLUMNS)
+    return f"{scope_msg} {cols_msg}"
 
 
 if __name__ == "__main__":

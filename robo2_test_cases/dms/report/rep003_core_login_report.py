@@ -8,12 +8,13 @@ import common as c
 
 TEST_CASE_ID = "REP-TC003"
 ROUTE = "/report/login_report/"
+SEARCH_LABELS = ["Users Name", "IP Address"]
 
 
 def test_search_login_report(session: c.ReportSession) -> str:
     session.login_as_role("core_report_manager")
     session.open_report(ROUTE)
-    return session.search_or_filter(["Users Name", "IP Address"])
+    return session.search_or_filter(SEARCH_LABELS, report_key="core_login")
 
 
 if __name__ == "__main__":

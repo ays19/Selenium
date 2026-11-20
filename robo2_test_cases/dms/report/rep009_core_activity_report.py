@@ -14,10 +14,7 @@ SEARCH_LABELS = ["Users Name", "Operations"]
 def test_search_core_activity_report(session: c.ReportSession) -> str:
     session.login_as_role("core_report_manager")
     session.open_report(ROUTE)
-    return session.search_or_filter(
-        SEARCH_LABELS,
-        expected_key="REPORT_EXPECTED_FILTER_TEXT_CORE_ACTIVITY_REPORT",
-    )
+    return session.search_or_filter(SEARCH_LABELS, report_key="core_activity")
 
 
 if __name__ == "__main__":

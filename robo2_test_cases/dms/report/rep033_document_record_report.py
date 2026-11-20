@@ -8,17 +8,14 @@ import common as c
 
 TEST_CASE_ID = "REP-TC033"
 ROUTE = "/dms/dms_report/document-record-report/"
-SEARCH_LABELS = ["Uploader"]
+SEARCH_LABELS = ["Uploader", "Document Name", "Document Type", "Metafield"]
 
 
 def test_search_document_record_report(session: c.ReportSession) -> str:
     session.login_as_role("dms_report_manager")
     session.open_report(ROUTE)
     session.select_document_type()
-    return session.search_or_filter(
-        SEARCH_LABELS,
-        expected_key="REPORT_EXPECTED_FILTER_TEXT_DOCUMENT_RECORD_REPORT",
-    )
+    return session.search_or_filter(SEARCH_LABELS, report_key="document_record")
 
 
 if __name__ == "__main__":

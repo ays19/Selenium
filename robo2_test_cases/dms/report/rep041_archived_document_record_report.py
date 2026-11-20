@@ -13,12 +13,8 @@ ROUTE = "/dms/dms_report/archived-document-report/"
 def test_filter_archived_document_record_report(session: c.ReportSession) -> str:
     session.login_as_role("dms_report_manager")
     session.open_report(ROUTE)
-    doc_type = session.select_document_type()
-    session.report_page.assert_table_contains(doc_type, "Document Type filtered result")
-    return f"Filtered by Document Type '{doc_type}' and verified matching rows."
+    return session.verify_document_type_rows(verify_text=True)
 
 
 if __name__ == "__main__":
-    c.run_report_test(
-        TEST_CASE_ID, ROUTE, test_filter_archived_document_record_report, __doc__
-    )
+    c.run_report_test(TEST_CASE_ID, ROUTE, test_filter_archived_document_record_report, __doc__)

@@ -14,13 +14,8 @@ SEARCH_LABELS = ["Document Type", "Access Group", "Owner Group", "Full Path"]
 def test_search_document_type_accessibility_report(session: c.ReportSession) -> str:
     session.login_as_role("dms_report_manager")
     session.open_report(ROUTE)
-    return session.search_or_filter(
-        SEARCH_LABELS,
-        expected_key="REPORT_EXPECTED_FILTER_TEXT_DOCUMENT_TYPE_REPORT",
-    )
+    return session.search_or_filter(SEARCH_LABELS, report_key="document_type")
 
 
 if __name__ == "__main__":
-    c.run_report_test(
-        TEST_CASE_ID, ROUTE, test_search_document_type_accessibility_report, __doc__
-    )
+    c.run_report_test(TEST_CASE_ID, ROUTE, test_search_document_type_accessibility_report, __doc__)

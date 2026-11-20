@@ -10,9 +10,9 @@ ROUTE = "/report/activity-report/"
 
 
 def test_open_core_activity_report(session: c.ReportSession) -> str:
-    session.login_as_role("core_user")
+    session.login_as_role("core_report_manager")
     session.open_report(ROUTE)
-    return session.verify_scope("accessible")
+    return session.verify_has_rows("Core Activity Report")
 
 
 if __name__ == "__main__":
