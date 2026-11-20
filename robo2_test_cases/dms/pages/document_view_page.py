@@ -33,6 +33,7 @@ class DocumentViewPage(BasePage):
     AI_CHAT_HISTORY = (By.ID, "scroll-bar")
 
     SHARE_DELETE_SELECTORS = (
+        "#share_document #delete_share_document, "
         "#share_document button[data-type*='delete' i], "
         "#share_document button[data-type*='remove' i], "
         "#share_document button[data-type*='unshare' i], "
@@ -43,13 +44,6 @@ class DocumentViewPage(BasePage):
         "#share_document .fa-trash, "
         "#share_document .zmdi-delete, "
         "#share_document .select2-selection__choice__remove"
-    )
-    SHARE_CONFIRM_XPATH = (
-        f"{BasePage.MODAL}//*[self::button or self::a or self::input]"
-        "[contains(translate(normalize-space(.), 'YESDLTRMVOK', 'yesdltrmvok'), 'yes') or "
-        "contains(translate(normalize-space(.), 'YESDLTRMVOK', 'yesdltrmvok'), 'delete') or "
-        "contains(translate(normalize-space(.), 'YESDLTRMVOK', 'yesdltrmvok'), 'remove') or "
-        "contains(translate(normalize-space(.), 'YESDLTRMVOK', 'yesdltrmvok'), 'ok')]"
     )
 
     # ------------------------------------------------------------------
@@ -133,40 +127,68 @@ class DocumentViewPage(BasePage):
             if (cmt && !cmt.value.trim()) cmt.value = 'Version upload';
         """)
 
+        old_html = self.driver.find_element(By.TAG_NAME, "html")
         upload_btns = self.driver.find_elements(By.CSS_SELECTOR, "#addVersion button[data-type='uploadVersion']")
         if upload_btns:
             ok, msg = self.message_after(lambda: self.click(upload_btns[0]))
         else:
             ok, msg = self.do("upload")
         if ok:
-            self.wait_for_ajax_idle(timeout=6)
+            try:
+                WebDriverWait(self.driver, 6).until(EC.staleness_of(old_html))
+            except TimeoutException:
+                pass
+            self.wait_for_page_load()
+            self.wait_for_ajax_idle(timeout=5)
         return ok, msg
 
     def show_versions(self, version_text: str) -> None:
         panels = self.driver.find_elements(*self.VERSION_HISTORY_PANEL)
-        if panels and not panels[0].is_displayed():
-            headers = self.driver.find_elements(By.CSS_SELECTOR, "#version-history-id .card-header")
-            if headers:
-                self.click(headers[0])
-            else:
-                self.click_label("version history")
+        if panels:
+            cls = (panels[0].get_attribute("class") or "").split()
+            if not panels[0].is_displayed() or "in" not in cls:
+                headers = self.driver.find_elements(By.CSS_SELECTOR, "#version-history-id .card-header")
+                if headers:
+                    self.click(headers[0])
+                else:
+                    self.click_label("version history")
             try:
-                WebDriverWait(self.driver, 5).until(lambda _d: panels[0].is_displayed())
+                WebDriverWait(self.driver, 6).until(
+                    lambda d: any(
+                        p.is_displayed() and version_text.lower() in (p.text or "").lower()
+                        for p in d.find_elements(*self.VERSION_HISTORY_PANEL)
+                    )
+                )
             except TimeoutException:
                 pass
-        elif not panels and self.find_by_label(version_text, slack=300) is None:
+        elif self.find_by_label(version_text, slack=300) is None:
             self.click_label("version history")
             self.wait_for_ajax_idle(timeout=5)
 
+    def _find_version_action(self, version_text: str, action: str):
+        xp = (
+            f"//div[@id='versionHistory']//div[contains(@class, 'media-body')]"
+            f"[contains(., {self.xpath_text(version_text)})]//a[@data-action={self.xpath_text(action)}]"
+        )
+        for btn in self.driver.find_elements(By.XPATH, xp):
+            if btn.is_displayed():
+                return btn
+        panels = [p for p in self.driver.find_elements(*self.VERSION_HISTORY_PANEL) if p.is_displayed()]
+        if panels:
+            return self.find_near(version_text, action, root=panels[0])
+        return None
+
     def download_version(self, version_text: str) -> str | None:
         self.show_versions(version_text)
+        btn = WebDriverWait(self.driver, 10).until(lambda _d: self._find_version_action(version_text, "download"))
         before = set(os.listdir(cfg.DOWNLOAD_DIR))
-        self.click_near(version_text, "download")
+        self.click(btn)
         return self.wait_for_download(before)
 
     def delete_version(self, version_text: str) -> tuple[bool, str]:
         self.show_versions(version_text)
-        return self.do_near(version_text, "delete", "yes")
+        btn = WebDriverWait(self.driver, 10).until(lambda _d: self._find_version_action(version_text, "delete"))
+        return self.message_after(lambda: (self.click(btn), self.confirm("yes")))
 
     # ------------------------------------------------------------------
     # Lifecycle: Checkout, Download, Full View, Archive, Delete
@@ -276,6 +298,24 @@ class DocumentViewPage(BasePage):
         self.expand_related_panel()
         return self.wait_text(name, 5)
 
+    def _related_panel_text(self) -> str:
+        return (
+            self.driver.execute_script("""
+                var btn = document.querySelector("button[data-type='related']");
+                var card = btn && (btn.closest('.card, .panel') || btn.parentElement.parentElement);
+                return card ? (card.innerText || '') : '';
+            """)
+            or ""
+        ).lower()
+
+    def wait_related_removed(self, name: str, timeout: int = 8) -> bool:
+        self.expand_related_panel()
+        try:
+            WebDriverWait(self.driver, timeout).until(lambda _d: name.lower() not in self._related_panel_text())
+            return True
+        except TimeoutException:
+            return False
+
     def unlink_related_file(self, other_name: str) -> tuple[bool, str]:
         self.expand_related_panel()
         del_btn = self.driver.execute_script("""
@@ -300,14 +340,41 @@ class DocumentViewPage(BasePage):
             return clickables[clickables.length - 1] || null;
         """, other_name)
 
+        old_html = self.driver.find_element(By.TAG_NAME, "html")
+        old_btn = del_btn
+
         if del_btn is None:
-            return self.do_near(other_name, "delete", "yes")
+            ok, msg = self.do_near(other_name, "delete", "yes")
+        else:
+            def _action():
+                self.click(del_btn)
+                self.confirm_any(("yes", "unlink", "delete", "ok"))
 
-        def _action():
-            self.click(del_btn)
-            self.confirm_any(("yes", "unlink", "delete", "ok"))
+            ok, msg = self.message_after(_action)
 
-        return self.message_after(_action)
+        if ok:
+            def _refreshed(d) -> bool:
+                try:
+                    if EC.staleness_of(old_html)(d):
+                        return True
+                except Exception:
+                    return True
+                if old_btn is not None:
+                    try:
+                        if EC.staleness_of(old_btn)(d):
+                            return True
+                    except Exception:
+                        return True
+                return False
+
+            try:
+                WebDriverWait(self.driver, 8).until(_refreshed)
+            except TimeoutException:
+                pass
+            self.wait_for_page_load()
+            self.wait_for_ajax_idle(timeout=5)
+
+        return ok, msg
 
     # ------------------------------------------------------------------
     # Share Section & Email Share (DMS-TC033, TC034, TC036)
@@ -315,65 +382,101 @@ class DocumentViewPage(BasePage):
 
     def expand_share_section(self) -> None:
         self.wait_for_ajax_idle(timeout=5)
-        panel = self.driver.find_elements(*self.SHARE_PANEL)
-        if panel and "in" in (panel[0].get_attribute("class") or "").split():
-            return
-        headers = self.driver.find_elements(By.CSS_SELECTOR, "[href='#share_document'], #document-share-id .card-header")
-        if headers:
-            self.click(headers[0])
-            self.wait_for_ajax_idle(timeout=4)
-        else:
-            self.driver.execute_script("""
-                document.querySelectorAll('.card-header, .panel-heading, a, div').forEach(function(el) {
-                    var t = (el.innerText || '').trim().toLowerCase();
-                    if (t === 'share document(s)' || t === 'share documents' || t === 'share') el.click();
-                });
-            """)
-            self.wait_for_ajax_idle(timeout=4)
+        panels = self.driver.find_elements(*self.SHARE_PANEL)
+        classes = (panels[0].get_attribute("class") or "").split() if panels else []
+        if not panels or ("in" not in classes and "collapsing" not in classes):
+            headers = self.driver.find_elements(
+                By.CSS_SELECTOR, "[href='#share_document'], #document-share-id .card-header"
+            )
+            if headers:
+                self.click(headers[0])
+            else:
+                self.driver.execute_script("""
+                    document.querySelectorAll('.card-header, .panel-heading, a, div').forEach(function(el) {
+                        var t = (el.innerText || '').trim().toLowerCase();
+                        if (t === 'share document(s)' || t === 'share documents' || t === 'share') el.click();
+                    });
+                """)
+
+        try:
+            WebDriverWait(self.driver, 8).until(
+                lambda d: any(
+                    "in" in (p.get_attribute("class") or "").split()
+                    and "collapsing" not in (p.get_attribute("class") or "").split()
+                    and p.is_displayed()
+                    for p in d.find_elements(*self.SHARE_PANEL)
+                )
+            )
+        except TimeoutException:
+            pass
+
+        try:
+            WebDriverWait(self.driver, 15).until(
+                lambda d: not any(
+                    el.is_displayed() for el in d.find_elements(By.CSS_SELECTOR, "#document-share-id #loaderOverlay")
+                )
+            )
+        except TimeoutException:
+            pass
+
+        self.wait_for_ajax_idle(timeout=5)
 
     def _find_share_delete_btn(self):
         for el in self.driver.find_elements(By.CSS_SELECTOR, self.SHARE_DELETE_SELECTORS):
-            if el.is_displayed():
+            if el.is_displayed() and el.is_enabled():
                 return el
-        for el in self.driver.find_elements(By.XPATH, "//div[@id='share_document']//*[self::button or self::a or self::input]"):
+        for el in self.driver.find_elements(
+            By.XPATH, "//div[@id='share_document']//*[self::button or self::a or self::input]"
+        ):
             label = (el.text or el.get_attribute("value") or "").strip().lower()
-            if label in ("delete", "remove", "unshare") and el.is_displayed():
+            if label in ("delete", "remove", "unshare") and el.is_displayed() and el.is_enabled():
                 return el
         return None
 
     def delete_shared_participant(self) -> tuple[bool, str]:
         self.expand_share_section()
-        del_btn = self._find_share_delete_btn()
-        if del_btn is None:
+        try:
+            del_btn = WebDriverWait(self.driver, 10).until(lambda _d: self._find_share_delete_btn())
+        except TimeoutException:
             return False, "Could not find the Delete button under the Share Document(s) section"
 
         is_token = "select2-selection__choice__remove" in (del_btn.get_attribute("class") or "")
-        self.click(del_btn)
-        self.wait_for_ajax_idle(timeout=4)
 
-        if is_token:
-            save_btns = self.driver.find_elements(
-                By.XPATH,
-                "//div[@id='share_document']//*[self::button or self::a or self::input]"
-                "[contains(translate(normalize-space(.), 'SHAREUPDT', 'shareupdt'), 'share') or "
-                "contains(translate(normalize-space(.), 'SHAREUPDT', 'shareupdt'), 'update')]",
-            )
-            for btn in save_btns:
-                if btn.is_displayed():
-                    self.click(btn)
-                    break
+        def _action():
+            self.click(del_btn)
+            if is_token:
+                share_btns = [
+                    b
+                    for b in self.driver.find_elements(By.ID, "submit_share_document")
+                    if b.is_displayed() and b.is_enabled()
+                ]
+                if not share_btns:
+                    share_btns = [
+                        b
+                        for b in self.driver.find_elements(
+                            By.XPATH,
+                            "//div[@id='share_document']//*[self::button or self::a or self::input]"
+                            "[contains(translate(normalize-space(.), 'SHAREUPDT', 'shareupdt'), 'share') or "
+                            "contains(translate(normalize-space(.), 'SHAREUPDT', 'shareupdt'), 'update')]",
+                        )
+                        if b.is_displayed() and b.is_enabled()
+                    ]
+                if share_btns:
+                    self.click(share_btns[0])
+            self.confirm_any(("yes", "delete", "remove", "ok"))
 
         try:
-            confirm_btn = WebDriverWait(self.driver, 3).until(
-                lambda d: next((b for b in d.find_elements(By.XPATH, self.SHARE_CONFIRM_XPATH) if b.is_displayed()), None)
-            )
-            self.click(confirm_btn)
+            ok, msg = self.message_after(_action, seconds=10)
         except TimeoutException:
-            pass
+            ok, msg = True, "Removed shared participant"
 
+        if not ok:
+            return False, msg
+
+        self.wait_for_page_load()
         self.wait_for_ajax_idle(timeout=5)
         self.expand_share_section()
-        return True, "Removed shared participant"
+        return True, msg
 
     def share_by_email(
         self,
@@ -481,11 +584,16 @@ class DocumentViewPage(BasePage):
 
     def ask_effy_chat(self, question: str = "What is this document about?", timeout_seconds: int = 60) -> tuple[bool, str]:
         self.wait_for_page_load()
-        chat_box = self.wait.until(EC.visibility_of_element_located(self.AI_CHAT_INPUT))
+        chat_box = self.wait.until(EC.element_to_be_clickable(self.AI_CHAT_INPUT))
+        self.click(chat_box)
         chat_box.clear()
         chat_box.send_keys(question)
 
-        submit_btn = self.wait.until(EC.element_to_be_clickable(self.AI_CHAT_SUBMIT))
+        try:
+            submit_btn = WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable(self.AI_CHAT_SUBMIT))
+        except TimeoutException:
+            self.click(chat_box)
+            submit_btn = WebDriverWait(self.driver, 10).until(EC.element_to_be_clickable(self.AI_CHAT_SUBMIT))
         self.click(submit_btn)
 
         def _answered(d):

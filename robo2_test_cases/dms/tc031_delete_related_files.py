@@ -25,8 +25,7 @@ def delete_related(session: c.DmsSession) -> tuple[bool, str]:
     if not ok:
         return False, message
 
-    session.document.expand_related_panel()
-    gone = not session.document.wait_text(second["name"], 3)
+    gone = session.document.wait_related_removed(second["name"], timeout=8)
     return gone, f"{message}. Related file " + (
         "removed from the list" if gone else "still shown in the list"
     )

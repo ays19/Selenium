@@ -26,6 +26,11 @@ class CategorizationPage(BasePage):
     ADD_META_MODAL = "#add_new_metafield"
     UNIQUENESS_BUILDER = "doc_uniqueness_condition_builder"
 
+    def __init__(self, driver, wait):
+        super().__init__(driver, wait)
+        self._created_test_items: list[tuple[str, str | None]] = []
+        self._item_parents: dict[str, str | None] = {}
+
     _PICK_UNIQUE_FIELD_JS = """
     var names = arguments[0], used = arguments[1], root = document.getElementById(arguments[2]);
     var selects = root ? root.querySelectorAll('select') : [];
@@ -90,6 +95,66 @@ class CategorizationPage(BasePage):
         self.wait_for_page_load()
         self.wait_for_ajax_idle(timeout=6)
 
+    def _find_doc_list_row(self, name: str):
+        q = self.xpath_text(name)
+        xp = (
+            f"//table[@id='all_doc_list']//tr[contains(@class,'clickie')]"
+            f"[td[1][normalize-space(.)={q} or starts-with(normalize-space(.), concat({q}, ' ('))]]"
+        )
+        return WebDriverWait(self.driver, 10).until(
+            lambda d: next(iter(d.find_elements(By.XPATH, xp)), None)
+        )
+
+    def _enter_folder(self, parent: str) -> None:
+        row = self._find_doc_list_row(parent)
+        cells = row.find_elements(By.TAG_NAME, "td")
+        target = cells[0] if cells else row
+        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target)
+        ActionChains(self.driver).double_click(target).perform()
+        try:
+            WebDriverWait(self.driver, 8).until(lambda _d: bool(self.visible("#back_button")))
+        except TimeoutException:
+            pass
+        self.wait_for_ajax_idle(timeout=5)
+
+    def open_folder(self, parent: str | None = None) -> None:
+        self.open_root()
+        try:
+            WebDriverWait(self.driver, 10).until(
+                lambda d: d.find_elements(By.CSS_SELECTOR, "#all_doc_list tbody tr.clickie")
+            )
+        except TimeoutException:
+            pass
+        if parent:
+            self._enter_folder(parent)
+
+    def resolve_default_parent(self) -> str | None:
+        parent = cfg.TEST_PARENT_CATEGORY
+        if not parent:
+            return None
+        rows = self.driver.find_elements(By.CSS_SELECTOR, "#all_doc_list tbody tr.clickie")
+        if not rows:
+            self.open_root()
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    lambda d: d.find_elements(By.CSS_SELECTOR, "#all_doc_list tbody tr.clickie")
+                )
+            except TimeoutException:
+                return None
+            rows = self.driver.find_elements(By.CSS_SELECTOR, "#all_doc_list tbody tr.clickie")
+        for row in rows:
+            cells = row.find_elements(By.TAG_NAME, "td")
+            if not cells:
+                continue
+            cell_text = cells[0].text.strip()
+            if cell_text == parent or cell_text.startswith(f"{parent} ("):
+                return parent
+        return None
+
+    def expected_full_path(self, name: str) -> str:
+        parent = self._item_parents.get(name)
+        return f"/{parent}/{name}/" if parent else f"/{name}/"
+
     def open_deleted_root(self) -> None:
         self.driver.get(cfg.DELETED_ROOT_URL)
         self.wait_for_page_load()
@@ -120,7 +185,7 @@ class CategorizationPage(BasePage):
         return row
 
     def open_doc_type_metadata(self, doc_type: str) -> None:
-        self.open_root()
+        self.open_folder(self._item_parents.get(doc_type))
         row = self.select_tree_item(doc_type)
         cells = row.find_elements(By.TAG_NAME, "td")
         ActionChains(self.driver).double_click(cells[0] if cells else row).perform()
@@ -139,82 +204,58 @@ class CategorizationPage(BasePage):
             return
         self.click_label(item_id_or_label)
 
-    def _find_doc_list_row(self, name: str):
-        xp = f"//table[@id='all_doc_list']//tr[contains(@class,'clickie')][td[1][starts-with(normalize-space(.), {self.xpath_text(name)})]]"
-        return WebDriverWait(self.driver, 10).until(
-            lambda d: next(iter(d.find_elements(By.XPATH, xp)), None)
-        )
-
     # ------------------------------------------------------------------
     # Category / Doc-Type CRUD (DMS-TC067, TC069, TC073)
     # ------------------------------------------------------------------
 
-    def create_top_level_doc_type(self) -> tuple[bool, str]:
-        """Create a doc-type via Add modal with explicit bootstrap-select verification (TC067)."""
-        name = datetime.now().strftime("AUTO_DT_%H%M%S")
-        self.open_root()
-        self.click(self.wait.until(EC.element_to_be_clickable(self.ADD_BTN)))
-        modal = self.wait.until(EC.visibility_of_element_located((By.ID, "add_parent_new_cat_doc")))
+    def _submit_add_modal(self, name: str, wanted_txt: str, parent: str | None) -> tuple[bool, str, str]:
+        modal_id = "add_new_cat_doc" if parent else "add_parent_new_cat_doc"
+        select_id = "cat_doc_field" if parent else "parent_cat_doc_field"
+
+        add_btn = self.wait.until(EC.element_to_be_clickable(self.ADD_BTN))
+        self.click(add_btn)
+        modal = self.wait.until(EC.visibility_of_element_located((By.ID, modal_id)))
         self.wait_for_ajax_idle(timeout=4)
 
         self.pick_bootstrap_select(
-            "parent_cat_doc_field",
-            "Document",
-            root_xpath="//div[@id='add_parent_new_cat_doc']",
+            select_id,
+            wanted_txt,
+            root_xpath=f"//div[@id='{modal_id}']",
         )
-        chosen = modal.find_element(By.CSS_SELECTOR, "button[data-id='parent_cat_doc_field'] .filter-option").text.strip()
-        if chosen.lower() != "document":
-            return False, f"could not choose Document in the dropdown (it shows '{chosen}')"
+        chosen = modal.find_element(By.CSS_SELECTOR, f"button[data-id='{select_id}'] .filter-option").text.strip()
+        if chosen.lower() != wanted_txt.lower():
+            return False, f"could not choose {wanted_txt} in the dropdown (it shows '{chosen}')", ""
 
         box = modal.find_element(By.CSS_SELECTOR, "input[name='name']")
         box.clear()
         box.send_keys(name)
 
-        save = self.wait.until(EC.element_to_be_clickable((By.ID, "submit_add_new_cat_doc")))
+        save = modal.find_element(By.CSS_SELECTOR, "button[type='submit']")
         ok, message = self.message_after(lambda: self.click(save))
+        if ok and name.startswith("AUTO_"):
+            self._created_test_items.append((name, parent))
+            self._item_parents[name] = parent
+        return ok, message, chosen
+
+    def create_top_level_doc_type(self) -> tuple[bool, str]:
+        """Create a doc-type via Add modal with explicit bootstrap-select verification (TC067)."""
+        name = datetime.now().strftime("AUTO_DT_%H%M%S")
+        self.open_folder(None)
+        parent = self.resolve_default_parent()
+        if parent:
+            self._enter_folder(parent)
+        ok, message, _ = self._submit_add_modal(name, "Document", parent)
         return ok, f"{message} ({name})"
 
     def create_category(self, name: str, kind: str = "doc-type", parent: str | None = None) -> tuple[bool, str]:
-        self.open_root()
+        self.open_folder(None)
+        if parent is None:
+            parent = self.resolve_default_parent()
         if parent:
-            self.select_tree_item(parent)
-            self.double_click_label(parent)
-            self.wait_for_ajax_idle(timeout=5)
-
-        add_btns = self.visible("#add_btn")
-        if add_btns:
-            self.click(add_btns[0])
-        else:
-            self.click_label("add")
-        self.wait_for_ajax_idle(timeout=4)
-
-        wanted_val = "doc" if "doc" in kind.lower() else "cat"
-        wanted_txt = "Document" if wanted_val == "doc" else "Category"
-        self.driver.execute_script("""
-            var val = arguments[0];
-            $('select[name="type"]:visible, #parent_cat_doc_field, #cat_doc_field').each(function() {
-                $(this).val(val).trigger('change');
-                if ($.fn.selectpicker) $(this).selectpicker('refresh');
-            });
-        """, wanted_val)
-
-        try:
-            toggle = self.visible(".modal.in button.dropdown-toggle, .modal.show button.dropdown-toggle")
-            if toggle and wanted_txt.lower() not in (toggle[0].get_attribute("title") or "").lower():
-                self.click(toggle[0])
-                opt = [
-                    a for a in self.visible(".modal.in .dropdown-menu.open li a, .modal.show .dropdown-menu.open li a")
-                    if wanted_txt.lower() in a.text.lower()
-                ]
-                if opt:
-                    self.click(opt[0])
-        except Exception:
-            pass
-
-        box = WebDriverWait(self.driver, 10).until(lambda _d: self.modal_text_input() or self.find_field("name"))
-        box.clear()
-        box.send_keys(name)
-        return self.do("save")
+            self._enter_folder(parent)
+        wanted_txt = "Document" if "doc" in kind.lower() else "Category"
+        ok, message, _ = self._submit_add_modal(name, wanted_txt, parent)
+        return ok, message
 
     def new_doc_type(self, parent: str | None = None) -> str:
         name = datetime.now().strftime("AUTO_DT_%H%M%S")
@@ -249,7 +290,7 @@ class CategorizationPage(BasePage):
         return self.message_after(lambda: self.click(button))
 
     def delete_category(self, name: str) -> tuple[bool, str]:
-        self.open_root()
+        self.open_folder(self._item_parents.get(name))
         self.select_tree_item(name)
 
         def _action():
@@ -290,7 +331,7 @@ class CategorizationPage(BasePage):
         if not ok:
             return False, message
 
-        self.open_root()
+        self.open_folder(self._item_parents.get(name))
         q = self.xpath_text(name)
         xp = (
             f"//table[@id='all_doc_list']//tr[contains(@class,'clickie')]/td[1]"
@@ -332,7 +373,7 @@ class CategorizationPage(BasePage):
     # ------------------------------------------------------------------
 
     def publish_doc_type(self, name: str) -> tuple[bool, str]:
-        self.open_root()
+        self.open_folder(self._item_parents.get(name))
         self.select_tree_item(name)
 
         def _do_publish():
@@ -357,7 +398,7 @@ class CategorizationPage(BasePage):
             ok, message = None, "Document type published"
 
         self.wait_for_ajax_idle(timeout=5)
-        self.open_root()
+        self.open_folder(self._item_parents.get(name))
         row = self._find_doc_list_row(name)
         status = row.find_elements(By.TAG_NAME, "td")[2].text.strip()
         passed = status == "Published" and ok is not False
@@ -371,7 +412,7 @@ class CategorizationPage(BasePage):
         select_id = "group_select" if kind == "access" else "owner_group_select"
         options_xpath = f"//div[@id='group_modal']//button[@data-id='{select_id}']/following-sibling::div//ul/li/a"
 
-        self.open_root()
+        self.open_folder(self._item_parents.get(name))
         self.select_tree_item(name)
         self.click_more_menu_item("assign_group")
 
@@ -392,7 +433,7 @@ class CategorizationPage(BasePage):
             ok, message = None, "confirmation message was not captured"
 
         self.wait_for_ajax_idle(timeout=5)
-        self.open_root()
+        self.open_folder(self._item_parents.get(name))
         row = self._find_doc_list_row(name)
         groups = row.find_elements(By.TAG_NAME, "td")[3].text.strip()
         expected = f"{group} (OG)" if kind == "owner" else group
@@ -405,7 +446,7 @@ class CategorizationPage(BasePage):
         return passed, f"{message} ({name}, {kind} group '{group}'). Groups column shows '{groups}'. {note}"
 
     def toggle_notify(self, name: str, expect: str) -> tuple[bool | None, str]:
-        self.open_root()
+        self.open_folder(self._item_parents.get(name))
         self.select_tree_item(name)
         self.click(self.wait.until(EC.element_to_be_clickable(self.MORE_BTN)))
         self.wait_for_ajax_idle(timeout=3)
@@ -420,7 +461,7 @@ class CategorizationPage(BasePage):
 
     def is_notify_on(self, name: str) -> bool:
         self.wait_for_ajax_idle(timeout=5)
-        self.open_root()
+        self.open_folder(self._item_parents.get(name))
         row = self._find_doc_list_row(name)
         return "notification:true" in (row.get_attribute("data-info") or "").replace(" ", "")
 
@@ -640,7 +681,75 @@ class CategorizationPage(BasePage):
         if not ok:
             raise SetupError(f"uniqueness check could not be saved ({message})")
 
-        self.open_root()
-        self.select_tree_item(doc_type)
-        self.message_after(lambda: self.click_more_menu_item("pub_per"))
+        ok_pub, msg_pub = self.publish_doc_type(doc_type)
+        if not ok_pub:
+            raise SetupError(f"doc-type could not be published ({msg_pub})")
         return doc_type, fields
+
+    def cleanup_created_items(self) -> None:
+        """Delete any temporary AUTO_* categories/doc-types created during this test session."""
+        if not self._created_test_items:
+            return
+        items = [
+            (name, parent)
+            for name, parent in dict.fromkeys(self._created_test_items)
+            if name.startswith("AUTO_")
+        ]
+        self._created_test_items.clear()
+        if not items:
+            return
+        try:
+            if not (self.driver.current_url or "").startswith(cfg.BASE_URL):
+                self.open_root()
+            self.driver.set_script_timeout(30)
+            self.driver.execute_async_script("""
+                var cb = arguments[arguments.length - 1];
+                var pairs = arguments[0];
+                function getCookie(n) {
+                    var m = document.cookie.match(new RegExp('(?:^|; )' + n + '=([^;]*)'));
+                    return m ? decodeURIComponent(m[1]) : '';
+                }
+                var el = document.querySelector('input[name="csrfmiddlewaretoken"]');
+                var csrf = (el && el.value) || getCookie('csrftoken') || '';
+                var targetNames = new Set(pairs.map(p => p[0]));
+                var parentNames = Array.from(new Set(pairs.map(p => p[1]).filter(Boolean)));
+                (async () => {
+                    try {
+                        var roots = await fetch('/api/v1/dms/categorization/root/').then(r => r.json());
+                        var candidates = roots.filter(r => targetNames.has(r.name));
+                        for (var pname of parentNames) {
+                            var parentRow = roots.find(r => r.name === pname);
+                            if (parentRow) {
+                                var detail = await fetch('/api/v1/dms/categorization/category/' + parentRow.id + '/').then(r => r.json());
+                                (detail.children || []).forEach(ch => {
+                                    if (targetNames.has(ch.name)) candidates.push(ch);
+                                });
+                            }
+                        }
+                        for (var item of candidates) {
+                            try {
+                                await fetch('/api/v1/dms/categorization/category/' + item.id + '/', {
+                                    method: 'DELETE',
+                                    headers: {'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded'},
+                                    body: 'csrfmiddlewaretoken=' + encodeURIComponent(csrf)
+                                });
+                            } catch (e) {}
+                        }
+                        var deleted = await fetch('/api/v1/dms/categorization/category/deleted_category/').then(r => r.json());
+                        for (var d of (Array.isArray(deleted) ? deleted : [])) {
+                            if (targetNames.has(d.name)) {
+                                try {
+                                    await fetch('/api/v1/dms/categorization/category/permanent_deleted_category/', {
+                                        method: 'POST',
+                                        headers: {'X-CSRFToken': csrf, 'Content-Type': 'application/json; charset=utf-8'},
+                                        body: JSON.stringify({id: d.id})
+                                    });
+                                } catch (e) {}
+                            }
+                        }
+                    } catch (e) {}
+                    cb(true);
+                })();
+            """, [list(pair) for pair in items])
+        except Exception:
+            pass

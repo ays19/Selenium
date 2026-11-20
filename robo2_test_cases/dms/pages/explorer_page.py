@@ -217,7 +217,20 @@ class ExplorerPage(BasePage):
                 self.click(self.driver.find_element(By.CSS_SELECTOR, f"label[for='{checkbox_id}'].ts-helper"))
         if submit:
             self.click(self.driver.find_element(By.ID, "search_btn"))
-            self.wait_for_ajax_idle(timeout=10)
+
+            def _results_loaded(d) -> bool:
+                if not self.visible(self.SEARCH_MODAL) or self.visible("#search_modal .loader"):
+                    return False
+                if self._search_result_rows_text():
+                    return True
+                content = d.find_elements(By.ID, "search_history_content")
+                return bool(content and "no search result found" in (content[0].text or "").lower())
+
+            try:
+                WebDriverWait(self.driver, 15).until(_results_loaded)
+            except TimeoutException:
+                pass
+            self.wait_for_ajax_idle(timeout=5)
 
     def advanced_finds(self, name: str, **options) -> bool:
         self.driver.get(cfg.EXPLORER_URL)
@@ -273,7 +286,9 @@ class ExplorerPage(BasePage):
                 continue
             try:
                 WebDriverWait(self.driver, 15).until(
-                    lambda _d: self._search_result_rows_text() and self._search_result_rows_text() != text
+                    lambda _d: not self.visible("#search_modal .loader")
+                    and self._search_result_rows_text()
+                    and self._search_result_rows_text() != text
                 )
             except TimeoutException:
                 break

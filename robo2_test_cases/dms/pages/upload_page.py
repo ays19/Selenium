@@ -468,7 +468,9 @@ class UploadPage(BasePage):
                 labels = panel.find_elements(By.XPATH, ".//label")
                 for i, label in enumerate(labels):
                     ltext = label.text.lower().strip()
-                    if not ltext or any(k in ltext for k in ("document type", "share with", "file name", "tag")):
+                    if not ltext or any(
+                        k in ltext for k in ("document type", "share with", "file name", "tag", "checker")
+                    ):
                         continue
                     is_required = "*" in label.text
                     try:
@@ -490,7 +492,9 @@ class UploadPage(BasePage):
                                 if (sel.multiple) {
                                     for (var k = 0; k < sel.options.length; k++) sel.options[k].selected = false;
                                     var shuffled = valid.slice().sort(function() { return Math.random() - 0.5; });
-                                    var count = Math.min(valid.length, 2 + Math.floor(Math.random() * Math.max(1, valid.length - 1)));
+                                    var minC = valid.length >= 10 ? 5 : Math.min(2, valid.length);
+                                    var maxC = valid.length >= 10 ? Math.min(10, valid.length - 2) : valid.length;
+                                    var count = minC + Math.floor(Math.random() * Math.max(1, maxC - minC + 1));
                                     for (var j = 0; j < count; j++) shuffled[j].selected = true;
                                 } else {
                                     var chosen = valid[Math.floor(Math.random() * valid.length)];
@@ -563,14 +567,38 @@ class UploadPage(BasePage):
         return []
 
     def select_share(self, kind: str) -> str:
+        def _share_option_ready(d) -> bool:
+            if self.visible("#document_share_div #loaderOverlay"):
+                return False
+            return bool(d.execute_script("""
+                var s = document.getElementById('shared_docs');
+                if (!s) return false;
+                var kind = (arguments[0] || '').toLowerCase();
+                if (kind === 'public') return !!s.querySelector("option[value='all-1']");
+                if (kind === 'all users') return !!s.querySelector("option[value='all-2']");
+                var groups = s.querySelectorAll('optgroup');
+                for (var i = 0; i < groups.length; i++) {
+                    if ((groups[i].label || '').toLowerCase() === kind && groups[i].querySelector('option')) {
+                        return true;
+                    }
+                }
+                return false;
+            """, kind))
+
+        try:
+            WebDriverWait(self.driver, 12).until(_share_option_ready)
+        except TimeoutException:
+            pass
+
         picked = self.driver.execute_script("""
             var s = document.getElementById('shared_docs'); var picked = '';
-            var kind = arguments[0];
+            var kind = (arguments[0] || '').toLowerCase();
+            if (!s) return '';
             if (kind == 'public') { var o = s.querySelector("option[value='all-1']"); if (o) { o.selected = true; picked = o.text.trim(); } }
             else if (kind == 'all users') { var o = s.querySelector("option[value='all-2']"); if (o) { o.selected = true; picked = o.text.trim(); } }
             else {
                 s.querySelectorAll('optgroup').forEach(function(g) {
-                    if (g.label.toLowerCase() == kind && !picked) {
+                    if ((g.label || '').toLowerCase() == kind && !picked) {
                         var o = g.querySelector('option');
                         if (o) { o.selected = true; picked = o.text.trim(); }
                     }
@@ -616,17 +644,29 @@ class UploadPage(BasePage):
             if fill:
                 self.fill_metadata_form(terms)
                 self.wait_for_ajax_idle(timeout=5)
+                if require_checker and not self.has_visible_checker():
+                    try:
+                        WebDriverWait(self.driver, 6).until(lambda _d: self.has_visible_checker())
+                    except TimeoutException:
+                        pass
                 checker_visible = self.has_visible_checker()
                 if require_checker and not checker_visible:
                     raise SetupError(
                         f"Doc type '{self.current_doc_type()}' (CHECKER_DOC_TYPE={doc_type!r}) "
                         f"does not have a Checker Group assigned (#checker-div is hidden)."
                     )
-                if checker_visible and not self.select_checker():
-                    raise SetupError(
-                        f"Checker dropdown (#checker-div) is shown for '{self.current_doc_type()}', "
-                        f"but no checker could be selected."
-                    )
+                if checker_visible:
+                    try:
+                        WebDriverWait(self.driver, 8).until(
+                            lambda d: len(d.find_elements(By.CSS_SELECTOR, "#checker option")) > 1
+                        )
+                    except TimeoutException:
+                        pass
+                    if not self.select_checker():
+                        raise SetupError(
+                            f"Checker dropdown (#checker-div) is shown for '{self.current_doc_type()}', "
+                            f"but no checker could be selected."
+                        )
             else:
                 self.select_document_type(terms)
                 self.wait_for_ajax_idle(timeout=5)
@@ -637,9 +677,17 @@ class UploadPage(BasePage):
         return pending_name
 
     def click_save_upload(self) -> tuple[bool, str]:
-        text_before = self.body_text()
-        self.click(self.driver.find_element(*self.UPLOAD_BTN))
-        return self.wait_for_message(text_before)
+        ok, message = self.message_after(lambda: self.click(self.driver.find_element(*self.UPLOAD_BTN)))
+        if ok:
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    lambda _d: self.selected_count() == 0
+                    and not self.visible("#add_meta_data > #loaderOverlay")
+                )
+            except TimeoutException:
+                if self.selected_count() > 0:
+                    return False, f"upload did not clear pending selection ({message})"
+        return ok, message
 
     def upload_document(
         self,
@@ -677,7 +725,7 @@ class UploadPage(BasePage):
         for label, value in values.items():
             self.fill_field(label, value)
         self.set_document_name(datetime.now().strftime("AUTO_%H%M%S%f"))
-        return self.message_after(lambda: self.click(self.driver.find_element(*self.UPLOAD_BTN)))
+        return self.click_save_upload()
 
     # ------------------------------------------------------------------
     # Naming Convention Helpers (DMS-TC012)

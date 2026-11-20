@@ -16,7 +16,7 @@ def full_path(session: c.DmsSession) -> tuple[bool, str]:
         raise c.SetupError(f"could not delete the doc-type ({message})")
 
     path = session.categorization.get_deleted_full_path(name)
-    expected = f"/{name}/"
+    expected = session.categorization.expected_full_path(name)
     if path == expected:
         return True, f"Full path of the deleted doc-type is shown as '{path}'"
     return False, f"Full path column shows '{path}', expected '{expected}'"

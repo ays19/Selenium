@@ -72,6 +72,10 @@ DOC_TYPE_SEARCH_TERMS: list[str] = (
     else ["1 FC Test updated/aa", "aa", "doc", "inv", "rep", "con", "ent", "ion", "ing"]
 )
 
+# Optional parent category name for temporary AUTO_* categorization tests
+# (empty by default so categorization tests target root as expected).
+TEST_PARENT_CATEGORY: str = (os.getenv("TEST_PARENT_CATEGORY") or "").strip()
+
 
 def is_headless() -> bool:
     return (os.getenv("DMS_HEADLESS") or "false").strip().lower() in {"1", "true", "yes"}

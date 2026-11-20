@@ -398,6 +398,7 @@ def run_dms_test(
     reporter.start_test(test_case_id, title, feature or title, description, cfg.BASE_URL)
 
     driver = None
+    session = None
     status = "failed"
     excel_status = "Fail"
     actual = ""
@@ -531,6 +532,11 @@ def run_dms_test(
                 pass
 
     finally:
+        if session is not None:
+            try:
+                session.categorization.cleanup_created_items()
+            except Exception:
+                pass
         if driver:
             try:
                 driver.quit()

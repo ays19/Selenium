@@ -20,9 +20,9 @@ def new_bulk_doc_type(session: c.DmsSession) -> str:
     doc_type = session.categorization.new_doc_type()
     session.categorization.new_metadata(doc_type, "One")
     session.categorization.new_metadata(doc_type, "Two")
-    session.categorization.open_root()
-    session.categorization.select_tree_item(doc_type)
-    session.categorization.message_after(lambda: session.categorization.click_more_menu_item("pub_per"))
+    ok_pub, msg_pub = session.categorization.publish_doc_type(doc_type)
+    if not ok_pub:
+        raise c.SetupError(f"could not publish doc-type ({msg_pub})")
     return doc_type
 
 

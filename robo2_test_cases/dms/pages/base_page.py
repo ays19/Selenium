@@ -32,7 +32,8 @@ class BasePage:
     FILE_INPUT = (By.CSS_SELECTOR, "input[type='file']")
     LOADING_INDICATORS = (
         By.CSS_SELECTOR,
-        ".dataTables_processing, .ant-spin-spinning, .loading-spinner",
+        ".dataTables_processing, .ant-spin-spinning, .loading-spinner, "
+        "#add_meta_data > #loaderOverlay, #search_modal .loader, #loading, .metadata-overlay",
     )
     MESSAGE_BOX = (
         ".toast, .alert, .swal2-popup, [role='alert'], .snackbar, .Toastify__toast, "
@@ -44,7 +45,10 @@ class BasePage:
         "published", "assigned", "cloned", "enabled", "disabled", "approved", "rejected", "downloaded",
     )
     ERROR_WORDS = (
-        "error", "failed", "required", "already exists", "invalid", "no checker", "you can only",
+        "error", "failed", "required", "already exists", "invalid", "no checker",
+        "you can only", "can not", "cannot", "max limit", "something went wrong",
+        "not allowed", "no file", "no document type",
+        "unsuccessful", "not success", "could not", "unable to",
     )
 
     LOWER = "translate({0}, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ-_', 'abcdefghijklmnopqrstuvwxyz  ')"
@@ -220,9 +224,9 @@ class BasePage:
                         continue
         return None
 
-    def find_near(self, anchor_text: str, label: str):
+    def find_near(self, anchor_text: str, label: str, root=None):
         try:
-            anchor = self.find_by_label(anchor_text, slack=300)
+            anchor = self.find_by_label(anchor_text, root=root, slack=300)
             if anchor is None:
                 return None
             container = anchor.find_element(
@@ -261,9 +265,9 @@ class BasePage:
 
         return self._retry_lookup(lambda _d: self.find_by_label(label, slack=slack), _act)
 
-    def click_near(self, anchor_text: str, label: str):
+    def click_near(self, anchor_text: str, label: str, root=None):
         return self._retry_lookup(
-            lambda _d: self.find_near(anchor_text, label),
+            lambda _d: self.find_near(anchor_text, label, root=root),
             lambda el: (self.click(el), el)[1],
         )
 
@@ -298,33 +302,70 @@ class BasePage:
                     if elem.is_displayed():
                         txt = elem.text.strip()
                         if txt:
-                            boxes.append(txt)
+                            cls = (elem.get_attribute("class") or "").lower()
+                            is_danger = any(
+                                c in cls for c in ("alert-danger", "toast-error", "has-error")
+                            ) or any(
+                                ic.is_displayed() for ic in elem.find_elements(By.CSS_SELECTOR, ".swal2-error")
+                            )
+                            boxes.append((is_danger, txt))
                 except StaleElementReferenceException:
                     continue
             try:
                 saved = d.execute_script("return sessionStorage.getItem('__last_notify_msg') || '';")
+                saved_type = (
+                    d.execute_script("return sessionStorage.getItem('__last_notify_type') || '';") or ""
+                ).lower()
             except Exception:
-                saved = ""
-            if saved and saved not in boxes:
-                boxes.append(saved)
-            for text in [b.lower() for b in boxes] + [self.body_text()]:
-                for word in self.SUCCESS_WORDS + self.ERROR_WORDS:
-                    if word in text and word not in text_before:
-                        return word, (boxes[0] if boxes else word)
+                saved, saved_type = "", ""
+
+            for is_danger, txt in boxes:
+                low = txt.lower()
+                for word in self.ERROR_WORDS:
+                    if word in low and word not in text_before:
+                        return False, txt
+                if re.search(r"\bsuccess", low) and ("success" not in text_before or low not in text_before):
+                    return True, txt
+                if is_danger and low not in text_before:
+                    return False, txt
+                for word in self.SUCCESS_WORDS:
+                    if word in low and word not in text_before:
+                        return True, txt
+
+            if saved:
+                low = saved.lower()
+                if any(word in low for word in self.ERROR_WORDS):
+                    return False, saved
+                if re.search(r"\bsuccess", low):
+                    return True, saved
+                if saved_type in ("danger", "error"):
+                    return False, saved
+                if saved_type == "success" or any(word in low for word in self.SUCCESS_WORDS):
+                    return True, saved
+
+            body = self.body_text()
+            for word in self.ERROR_WORDS:
+                if word in body and word not in text_before:
+                    return False, word
+            for word in self.SUCCESS_WORDS:
+                if word in body and word not in text_before:
+                    return True, word
             return None
 
-        word, msg = WebDriverWait(
+        ok, msg = WebDriverWait(
             self.driver,
             seconds,
             ignored_exceptions=(NoSuchElementException, StaleElementReferenceException),
         ).until(_new_message)
         try:
-            self.driver.execute_script("sessionStorage.removeItem('__last_notify_msg');")
+            self.driver.execute_script(
+                "sessionStorage.removeItem('__last_notify_msg'); sessionStorage.removeItem('__last_notify_type');"
+            )
         except Exception:
             pass
-        return word in self.SUCCESS_WORDS, msg
+        return ok, msg
 
-    def message_after(self, action) -> tuple[bool, str]:
+    def message_after(self, action, seconds: int = 20) -> tuple[bool, str]:
         try:
             WebDriverWait(self.driver, 6).until(lambda _d: not self.visible(self.MESSAGE_BOX))
         except TimeoutException:
@@ -332,21 +373,27 @@ class BasePage:
         try:
             self.driver.execute_script("""
                 sessionStorage.removeItem('__last_notify_msg');
-                if (typeof window.notify === 'function' && !window.__notify_wrapped) {
-                    var orig = window.notify;
-                    window.notify = function(title, message) {
+                sessionStorage.removeItem('__last_notify_type');
+                if (typeof window.notify === 'function' && !window.__notify_wrapped_v2) {
+                    var orig = window.__notify_orig || window.notify;
+                    window.__notify_orig = orig;
+                    window.notify = function(title, message, from, type) {
                         var full = [title, message].filter(Boolean).join(' ').trim();
-                        if (full) { sessionStorage.setItem('__last_notify_msg', full); }
+                        if (full) {
+                            sessionStorage.setItem('__last_notify_msg', full);
+                            sessionStorage.setItem('__last_notify_type', String(type || '').toLowerCase());
+                        }
                         return orig.apply(this, arguments);
                     };
-                    window.__notify_wrapped = true;
+                    window.__notify_wrapped_v2 = true;
                 }
             """)
         except Exception:
             pass
         text_before = self.body_text()
         action()
-        ok, message = self.wait_for_message(text_before)
+        ok, message = self.wait_for_message(text_before, seconds=seconds)
+        message = re.sub(r"<[^>]+>", " ", message)
         message = re.sub(r"^[×x]?\s*close\s*", "", " ".join(message.split()), flags=re.I)
         return ok, message
 
@@ -403,9 +450,9 @@ class BasePage:
 
         return self.message_after(_action)
 
-    def do_near(self, anchor_text: str, label: str, confirm_label: str | None = None) -> tuple[bool, str]:
+    def do_near(self, anchor_text: str, label: str, confirm_label: str | None = None, root=None) -> tuple[bool, str]:
         def _action():
-            self.click_near(anchor_text, label)
+            self.click_near(anchor_text, label, root=root)
             if confirm_label:
                 self.confirm(confirm_label)
 
