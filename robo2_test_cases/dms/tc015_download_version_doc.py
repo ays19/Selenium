@@ -6,24 +6,24 @@ Download version doc
 3. Click on "Download" icon
 Version doc should be downloaded
 """
-import os
-
 import common as c
 
 TEST_CASE_ID = "DMS-TC015"
-
 EXTENDED_NAME = "AUTO_v2"
 
 
-def version_download(driver, wait):
-    c.new_document(driver, wait)
-    ok, message = c.add_version(driver, wait, EXTENDED_NAME)
+def version_download(session: c.DmsSession) -> tuple[bool, str]:
+    session.new_document()
+    sample = session.upload.find_sample_file("pdf")
+    if not sample:
+        raise c.SetupError(f"no .pdf sample file in {c.SAMPLE_DIR}")
+    _, pdf_copy = session.upload.unique_copy(sample[1])
+
+    ok, message = session.document.add_version(pdf_copy, EXTENDED_NAME)
     if not ok:
         raise c.SetupError(f"version doc could not be added ({message})")
-    c.show_versions(driver, wait, EXTENDED_NAME)
-    before = set(os.listdir(c.DOWNLOAD_DIR))
-    c.click_near(driver, wait, EXTENDED_NAME, "download")
-    file_name = c.wait_for_download(before)
+
+    file_name = session.document.download_version(EXTENDED_NAME)
     if file_name:
         return True, f"Version doc downloaded: {file_name}"
     return False, "no file was downloaded after clicking the Download icon of the version"
@@ -32,8 +32,8 @@ def version_download(driver, wait):
 SCENARIOS = [("Version download", version_download)]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":

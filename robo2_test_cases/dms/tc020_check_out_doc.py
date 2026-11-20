@@ -13,25 +13,21 @@ import common as c
 TEST_CASE_ID = "DMS-TC020"
 
 
-def check_out(driver, wait):
-    info = c.upload_document(driver, wait)
-    name = info["name"]
-
-    c.open_document(driver, wait, name)
-    ok, message = c.do(driver, wait, "check out", "yes")
+def check_out(session: c.DmsSession) -> tuple[bool, str]:
+    info = session.new_document()
+    ok, message = session.document.check_out()
     if not ok:
         return False, message
 
-    driver.get(c.CHECKOUT_URL)
-    in_list = c.wait_text(driver, name)
+    in_list = session.document.is_in_checked_out_list(info["name"])
     return in_list, f"{message}. Shown in Checked Out Documents: {'yes' if in_list else 'NO'}"
 
 
 SCENARIOS = [("Check-out", check_out)]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":

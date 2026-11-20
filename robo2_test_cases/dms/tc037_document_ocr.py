@@ -6,55 +6,35 @@ Document OCR
 3. Try to click on "OCR Document" icon
 Document ocr should be done.
 """
-import time
-
-from selenium.webdriver.common.by import By
-
 import common as c
 
 TEST_CASE_ID = "DMS-TC037"
 
 
-def expand_system_metadata(driver):
-    panel = driver.find_elements(By.ID, "systemDefinedMetaDataBody")
-    if panel and "in" not in (panel[0].get_attribute("class") or "").split():
-        toggle = driver.find_elements(
-            By.CSS_SELECTOR,
-            "[data-target='#systemDefinedMetaDataBody'], #systemDefinedMetaDataBodyHeadingOne a",
-        )
-        if toggle:
-            c.click(driver, toggle[0])
-            time.sleep(1.5)
-
-
-def ocr(ext):
-    def scenario(driver, wait):
-        info = c.upload_document(driver, wait, ext)
+def ocr(ext: str):
+    def _scenario(session: c.DmsSession) -> tuple[bool, str]:
+        info = session.upload_document(ext)
         name = info["name"]
+        session.explorer.open_document(name)
+        session.document.wait_for_page_load()
+        session.document.expand_system_metadata()
 
-        c.open_document(driver, wait, name)
-        time.sleep(2)
-        expand_system_metadata(driver)
-
-        status_el = driver.find_elements(By.ID, "ocr-status")
-        ocr_status = (
-            (status_el[0].text or status_el[0].get_attribute("textContent") or "").strip()
-            if status_el
-            else ""
-        )
+        ocr_status = session.document.read_ocr_status()
         if not ocr_status or ocr_status.upper() == "N/A":
-            return False, f"OCR was not enabled for uploaded .{ext} document '{name}' (OCR Status: {ocr_status or 'missing'})"
-
+            return False, (
+                f"OCR was not enabled for uploaded .{ext} document '{name}' "
+                f"(OCR Status: {ocr_status or 'missing'})"
+            )
         return True, f"Document '{name}' (.{ext}) uploaded with OCR enabled (OCR Status: {ocr_status})"
 
-    return scenario
+    return _scenario
 
 
 SCENARIOS = [("OCR pdf", ocr("pdf")), ("OCR png", ocr("png"))]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":

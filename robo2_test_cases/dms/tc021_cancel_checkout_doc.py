@@ -13,30 +13,30 @@ import common as c
 TEST_CASE_ID = "DMS-TC021"
 
 
-def cancel_check_out(driver, wait):
-    info = c.upload_document(driver, wait)
+def cancel_check_out(session: c.DmsSession) -> tuple[bool, str]:
+    info = session.new_document()
     name = info["name"]
 
-    c.open_document(driver, wait, name)
-    ok, message = c.do(driver, wait, "check out", "yes")
+    ok, message = session.document.check_out()
     if not ok:
         raise c.SetupError(f"could not check out the test document ({message})")
 
-    c.open_document(driver, wait, name)
-    ok, message = c.do(driver, wait, "cancel check out", "yes")
+    session.explorer.open_document(name)
+    ok, message = session.document.cancel_check_out()
     if not ok:
         return False, message
 
-    driver.get(c.CHECKOUT_URL)
-    still_listed = c.wait_text(driver, name, 4)
-    return (not still_listed), (f"{message}. Removed from Checked Out Documents: {'yes' if not still_listed else 'NO'}")
+    still_listed = session.document.is_in_checked_out_list(name, timeout=4)
+    return (not still_listed), (
+        f"{message}. Removed from Checked Out Documents: {'yes' if not still_listed else 'NO'}"
+    )
 
 
 SCENARIOS = [("Cancel check-out", cancel_check_out)]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":

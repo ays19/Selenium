@@ -6,19 +6,18 @@ Delete Document
 3. Click on "Yes, Delete"
 Document should be deleted
 """
-import time
-
 import common as c
 
 TEST_CASE_ID = "DMS-TC027"
 
-def delete_document(driver, wait):
-    info = c.new_document(driver, wait)
-    ok, message = c.do(driver, wait, "delete", "yes")
+
+def delete_document(session: c.DmsSession) -> tuple[bool, str]:
+    info = session.new_document()
+    ok, message = session.document.delete_current()
     if not ok:
         return False, message
-    time.sleep(3)
-    if c.search_finds(driver, wait, info["name"]):
+
+    if session.explorer.search_finds(info["name"]):
         return False, f"{message}. Deleted document is still found in quick search"
     return True, f"{message}. Document is not found in quick search any more"
 
@@ -26,8 +25,8 @@ def delete_document(driver, wait):
 SCENARIOS = [("Delete document", delete_document)]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":

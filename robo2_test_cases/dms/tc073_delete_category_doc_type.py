@@ -7,21 +7,21 @@ Delete Category/Doc Type
 Category/doc-type should be deleted with confirmation message
 """
 import common as c
-import dms_helper as d
 
 TEST_CASE_ID = "DMS-TC073"
 
-def delete_doc_type(driver, wait):
-    name = d.new_doc_type(driver, wait)  # a new doc-type has no document
-    ok, message = d.delete_category(driver, wait, name)
+
+def delete_doc_type(session: c.DmsSession) -> tuple[bool, str]:
+    name = session.categorization.new_doc_type()
+    ok, message = session.categorization.delete_category(name)
     return ok, f"{message} ({name})"
 
 
 SCENARIOS = [("Delete doc-type", delete_doc_type)]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":

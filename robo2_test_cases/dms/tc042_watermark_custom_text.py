@@ -12,21 +12,21 @@ Watermark should be created with proper confirmation message.
 from datetime import datetime
 
 import common as c
-import dms_helper as d
 
 TEST_CASE_ID = "DMS-TC042"
 
-def custom_text(driver, wait):
-    c.prepare_upload(driver, wait, "pdf")  # step 2: a document type is selected
+
+def custom_text(session: c.DmsSession) -> tuple[bool, str]:
+    session.upload.prepare_upload("pdf")
     text = datetime.now().strftime("AUTO_WM_%H%M%S")  # max 20 characters
-    return d.create_text_watermark(driver, wait, text)
+    return session.upload.create_text_watermark(text)
 
 
 SCENARIOS = [("Custom text watermark", custom_text)]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":

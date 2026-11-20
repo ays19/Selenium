@@ -10,66 +10,47 @@ PDF Document OCR from Advanced Search
 Matched content should show the respective document
 """
 import os
-import time
-
-from selenium.webdriver.common.by import By
 
 import common as c
 
 TEST_CASE_ID = "DMS-TC136"
 
-DOC_TYPE = os.getenv("OCR_DOC_TYPE")        # a doc-type with OCR enabled
-SEARCH_TEXT = os.getenv("OCR_SEARCH_TEXT")  # a word or phrase that is inside the sample PDF
 
+def ocr_advanced_search(session: c.DmsSession) -> tuple[bool, str]:
+    doc_type = os.getenv("OCR_DOC_TYPE", "").strip()
+    search_text = os.getenv("OCR_SEARCH_TEXT", "").strip()
 
-def wait_for_ocr(driver, wait, name, timeout_seconds=60):
-    """Open document view, verify OCR status is enabled/active, and return to explorer."""
-    c.open_document(driver, wait, name)
-    time.sleep(2)
-    end = time.time() + timeout_seconds
-    ocr_status = ""
-    while time.time() < end:
-        status_el = driver.find_elements(By.ID, "ocr-status")
-        ocr_status = (
-            (status_el[0].text or status_el[0].get_attribute("textContent") or "").strip()
-            if status_el
-            else ""
-        )
-        if ocr_status and ocr_status.upper() != "N/A":
-            break
-        time.sleep(2)
-
-    # Close document view tab and switch back to main tab
-    if len(driver.window_handles) > 1:
-        driver.close()
-        driver.switch_to.window(driver.window_handles[0])
-
-    if not ocr_status or ocr_status.upper() == "N/A":
-        return False, f"OCR was not enabled for document '{name}' (OCR Status: {ocr_status or 'missing'})"
-    return True, f"OCR Status: {ocr_status}"
-
-
-def ocr_advanced_search(driver, wait):
-    info = c.upload_document(driver, wait, "pdf", doc_type=DOC_TYPE)
+    info = session.upload_document("pdf", doc_type=doc_type)
     name = info["name"]
-    ok, status_msg = wait_for_ocr(driver, wait, name)
+    ok, status_msg = session.open_and_wait_for_ocr(name)
     if not ok:
-        return False, status_msg
-    driver.get(c.EXPLORER_URL)
-    time.sleep(2)
-    c.advanced_search(driver, wait, None, match_all=False, doc_type=info["doc_type"], extra=[("content search", SEARCH_TEXT)])
-    time.sleep(3)
-    shown = name.lower() in c.body_text(driver)
-    return shown, f"Content search '{SEARCH_TEXT}' " + ("shows the document" if shown else "does NOT show the document") + f" ({status_msg})"
+        return False, f"{status_msg} for document '{name}'"
+
+    session.explorer.open()
+    session.explorer.advanced_search(
+        None, match_all=False, doc_type=info["doc_type"], extra=[("content search", search_text)]
+    )
+    shown = name.lower() in session.explorer.body_text()
+    return shown, (
+        f"Content search '{search_text}' "
+        + ("shows the document" if shown else "does NOT show the document")
+        + f" ({status_msg})"
+    )
 
 
 SCENARIOS = [("OCR advanced search", ocr_advanced_search)]
 
 
-def main():
-    c.need_env("OCR_DOC_TYPE", "(search text of a doc-type with OCR enabled)")
-    c.need_env("OCR_SEARCH_TEXT", "(a word that is inside the sample pdf)")
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(
+        TEST_CASE_ID,
+        SCENARIOS,
+        doc=__doc__,
+        required_env=[
+            ("OCR_DOC_TYPE", "(search text of a doc-type with OCR enabled)"),
+            ("OCR_SEARCH_TEXT", "(a word that is inside the sample pdf)"),
+        ],
+    )
 
 
 if __name__ == "__main__":

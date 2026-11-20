@@ -14,48 +14,29 @@ TEST_CASE_ID = "DMS-TC009"
 FILES_TO_UPLOAD = ["png", "mp3", "docx"]  # image, media, office file
 
 
-def upload_document(driver, wait, ext):
-    """Attach a sample file of type `ext`, fill required metadata, and save."""
-    try:
-        c.prepare_upload(driver, wait, ext)
-        c.set_document_name(driver, datetime.now().strftime(f"AUTO_{ext}_%H%M%S"))
-        ok, message = c.message_after(driver, lambda: c.click(driver, driver.find_element(*c.UPLOAD_BTN)))
-    except Exception as error:
-        return c.fail(driver, TEST_CASE_ID, ext, c.short(error))
+def upload_ext(ext: str):
+    def _scenario(session: c.DmsSession) -> tuple[bool, str]:
+        session.upload.prepare_upload(ext)
+        session.upload.set_document_name(datetime.now().strftime(f"AUTO_{ext}_%H%M%S"))
+        return session.upload.click_save_upload()
 
-    if ok:
-        c.save_shot(driver, TEST_CASE_ID, ext, "PASS")
-        return True, message
-    return c.fail(driver, TEST_CASE_ID, ext, message)
+    return _scenario
 
 
-def main():
-    c.check_excel_ready(TEST_CASE_ID)
-
-    driver, wait = c.start_browser()
-    passed, failed = [], []
-
-    try:
-        c.login(driver, wait)
-        for ext in FILES_TO_UPLOAD:
-            ok, msg = upload_document(driver, wait, ext)
-            print(f"{ext:5} -> {'PASS' if ok else 'FAIL'} ({msg})")
-            (passed if ok else failed).append(f"{ext} ({msg})")
-    finally:
-        driver.quit()
-
-    total = len(FILES_TO_UPLOAD)
+def summarize(results: list[tuple[str, bool, str]]) -> str:
+    total = len(results)
+    passed = [f"{lbl} ({msg})" for lbl, ok, msg in results if ok]
+    failed = [f"{lbl} ({msg})" for lbl, ok, msg in results if not ok]
     if failed:
-        status = "Fail"
-        actual = f"Uploaded {len(passed)}/{total}. Failed: " + ", ".join(failed)
-    else:
-        status = "Pass"
-        actual = f"All {total} documents uploaded. Confirmation shown: " + "; ".join(passed)
+        return f"Uploaded {len(passed)}/{total}. Failed: " + ", ".join(failed)
+    return f"All {total} documents uploaded. Confirmation shown: " + "; ".join(passed)
 
-    c.write_result(TEST_CASE_ID, actual, status)
-    print(f"\n{TEST_CASE_ID}: {status}")
-    if status == "Fail":
-        raise SystemExit(1)
+
+SCENARIOS = [(ext, upload_ext(ext)) for ext in FILES_TO_UPLOAD]
+
+
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__, summary_fn=summarize)
 
 
 if __name__ == "__main__":

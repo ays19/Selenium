@@ -1,7 +1,7 @@
 """
 DMS-TC025
 Archive Doc
-1. Open a document 
+1. Open a document
 2. Click on "Archive"
 3. Click on "Yes, Archive"
 1. Document should be archived with proper confirmation message
@@ -9,26 +9,24 @@ Archive Doc
 3. Document should be removed from quick search
 4. Document should be removed from advanced search (without enabling "include archive"
 """
-import time
-
 import common as c
 
 TEST_CASE_ID = "DMS-TC025"
 
-def archive(driver, wait):
-    info = c.new_document(driver, wait)
+
+def archive(session: c.DmsSession) -> tuple[bool, str]:
+    info = session.new_document()
     name = info["name"]
-    ok, message = c.do(driver, wait, "archive", "yes")
+    ok, message = session.document.archive()
     if not ok:
         return False, message
-    time.sleep(3)
 
     still_shown = []
-    if c.explorer_has(driver, wait, info["doc_type"], name):
+    if session.explorer.explorer_has(info["doc_type"], name):
         still_shown.append("explorer view")
-    if c.search_finds(driver, wait, name):
+    if session.explorer.search_finds(name):
         still_shown.append("quick search")
-    if c.advanced_finds(driver, wait, name):
+    if session.explorer.advanced_finds(name):
         still_shown.append("advanced search")
     if still_shown:
         return False, f"{message}. Archived document is still shown in: {', '.join(still_shown)}"
@@ -38,8 +36,8 @@ def archive(driver, wait):
 SCENARIOS = [("Archive", archive)]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":

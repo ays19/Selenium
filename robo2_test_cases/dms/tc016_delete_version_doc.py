@@ -9,25 +9,28 @@ Version doc should be deleted with proper confirmation message
 import common as c
 
 TEST_CASE_ID = "DMS-TC016"
-
 EXTENDED_NAME = "AUTO_v2"
 
 
-def version_delete(driver, wait):
-    c.new_document(driver, wait)
-    ok, message = c.add_version(driver, wait, EXTENDED_NAME)
+def version_delete(session: c.DmsSession) -> tuple[bool, str]:
+    session.new_document()
+    sample = session.upload.find_sample_file("pdf")
+    if not sample:
+        raise c.SetupError(f"no .pdf sample file in {c.SAMPLE_DIR}")
+    _, pdf_copy = session.upload.unique_copy(sample[1])
+
+    ok, message = session.document.add_version(pdf_copy, EXTENDED_NAME)
     if not ok:
         raise c.SetupError(f"version doc could not be added ({message})")
-    c.show_versions(driver, wait, EXTENDED_NAME)
-    ok, message = c.do_near(driver, wait, EXTENDED_NAME, "delete", "yes")
-    return ok, message
+
+    return session.document.delete_version(EXTENDED_NAME)
 
 
 SCENARIOS = [("Version delete", version_delete)]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":

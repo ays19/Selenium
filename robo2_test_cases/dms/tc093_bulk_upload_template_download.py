@@ -9,15 +9,13 @@ Selected doc-type bulk upload template should be downloaded
 import os
 
 import common as c
-import dms_helper as d
 
 TEST_CASE_ID = "DMS-TC093"
 
-DOC_TYPE = os.getenv("BULK_DOC_TYPE")  # search text of a doc-type for bulk upload
 
-
-def template_download(driver, wait):
-    path = d.download_template(driver, wait, DOC_TYPE)
+def template_download(session: c.DmsSession) -> tuple[bool, str]:
+    doc_type = os.getenv("BULK_DOC_TYPE", "").strip()
+    path = session.bulk_upload.download_template(doc_type)
     size = os.path.getsize(path)
     return size > 0, f"Template downloaded: {os.path.basename(path)} ({size} bytes)"
 
@@ -25,9 +23,13 @@ def template_download(driver, wait):
 SCENARIOS = [("Template download", template_download)]
 
 
-def main():
-    c.need_env("BULK_DOC_TYPE", "(search text of a doc-type for bulk upload)")
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(
+        TEST_CASE_ID,
+        SCENARIOS,
+        doc=__doc__,
+        required_env=[("BULK_DOC_TYPE", "(search text of a doc-type for bulk upload)")],
+    )
 
 
 if __name__ == "__main__":

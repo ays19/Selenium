@@ -1,6 +1,6 @@
 """
-DMS-TC014	
-Version Doc Upload	
+DMS-TC014
+Version Doc Upload
 "1. Open a document
 2. Click on ""Add"" icon on version history
 3. Select new version doc, can give file name extended part
@@ -10,23 +10,33 @@ Version doc should be uploaded with proper confirmation message. Extended name s
 import common as c
 
 TEST_CASE_ID = "DMS-TC014"
+EXTENDED_NAME = "AUTO_v2"
 
-EXTENDED_NAME = "AUTO_v2"  # the extended part of the version file name
 
+def version_upload(session: c.DmsSession) -> tuple[bool, str]:
+    session.new_document()
+    sample = session.upload.find_sample_file("pdf")
+    if not sample:
+        raise c.SetupError(f"no .pdf sample file in {c.SAMPLE_DIR}")
+    _, pdf_copy = session.upload.unique_copy(sample[1])
 
-def version_upload(driver, wait):
-    c.new_document(driver, wait)
-    ok, message = c.add_version(driver, wait, EXTENDED_NAME)
+    ok, message = session.document.add_version(pdf_copy, EXTENDED_NAME)
     if not ok:
         return False, message
-    c.show_versions(driver, wait, EXTENDED_NAME)
-    shown = c.wait_text(driver, EXTENDED_NAME)
-    return shown, f"{message}. Extended name '{EXTENDED_NAME}' " + ("shown in version history" if shown else "not shown in version history")
+
+    session.document.show_versions(EXTENDED_NAME)
+    shown = session.document.wait_text(EXTENDED_NAME)
+    return shown, f"{message}. Extended name '{EXTENDED_NAME}' " + (
+        "shown in version history" if shown else "not shown in version history"
+    )
+
 
 SCENARIOS = [("Version upload", version_upload)]
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
+
 
 if __name__ == "__main__":
     main()

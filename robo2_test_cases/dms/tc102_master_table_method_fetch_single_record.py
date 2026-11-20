@@ -8,20 +8,20 @@ Master Table Method (Fetch)
 2. When user try to upload documents, edit metadata, advanced search & my documents search then data should be fetched accordingly.
 """
 import common as c
-import dms_helper as d
 
 TEST_CASE_ID = "DMS-TC102"
 
-def single_record(driver, wait):
-    ok, message, name = d.create_method(driver, wait, "single record")
+
+def single_record(session: c.DmsSession) -> tuple[bool, str]:
+    ok, message, name = session.master_table.create_method("single record")
     return ok, f"{message} ({name}). Data fetching on the upload / search pages is not checked by the script"
 
 
 SCENARIOS = [("Single record method", single_record)]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":

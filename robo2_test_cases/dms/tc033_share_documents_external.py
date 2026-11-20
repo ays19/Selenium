@@ -6,43 +6,28 @@ Share Documents (External Share)
 3. Click on "Share" button
 Documents should be shared with all system users & anyone with the link can access those documents.
 """
-import time
 import common as c
 
 TEST_CASE_ID = "DMS-TC033"
 
 
-def share_public(driver, wait):
-    info = c.upload_document(driver, wait, "pdf", share="public")
+def share_public(session: c.DmsSession) -> tuple[bool, str]:
+    info = session.upload_document("pdf", share="public")
     name = info["name"]
 
-    # Verify the uploaded public document is searchable and accessible in Document View
-    found = c.search_finds(driver, wait, name, tries=3)
-    if not found:
+    if not session.explorer.search_finds(name, tries=3):
         return False, f"Uploaded as '{info['shared_with']}', but document '{name}' was not found in search"
 
-    c.open_document(driver, wait, name)
-    time.sleep(2)
-
-    # Expand the Share Document(s) panel if present so the screenshot captures the Public share state
-    driver.execute_script("""
-        document.querySelectorAll('.card-header, .panel-heading, a, div').forEach(function(el) {
-            var t = (el.innerText || '').trim().toLowerCase();
-            if (t === 'share document(s)' || t === 'share documents' || t === 'share') {
-                el.click();
-            }
-        });
-    """)
-    time.sleep(1.5)
-
+    session.explorer.open_document(name)
+    session.document.expand_share_section()
     return True, f"Document '{name}' uploaded and shared externally as '{info['shared_with']}' successfully"
 
 
 SCENARIOS = [("Public share", share_public)]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":

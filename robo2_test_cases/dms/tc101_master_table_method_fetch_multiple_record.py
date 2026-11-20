@@ -8,20 +8,20 @@ Master Table Method (Fetch)
 2. Multiple records should be set on the dropdown fields of the metadataa on upload documents, edit metadata, advanced search & my documents search
 """
 import common as c
-import dms_helper as d
 
 TEST_CASE_ID = "DMS-TC101"
 
-def multiple_record(driver, wait):
-    ok, message, name = d.create_method(driver, wait, "multiple record")
+
+def multiple_record(session: c.DmsSession) -> tuple[bool, str]:
+    ok, message, name = session.master_table.create_method("multiple record")
     return ok, f"{message} ({name}). Dropdown values on the upload / search pages are not checked by the script"
 
 
 SCENARIOS = [("Multiple record method", multiple_record)]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":

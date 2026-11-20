@@ -74,7 +74,6 @@ def build():
 
     ensure_unlocked_dist(dist_dir)
 
-    # Clean previous build directories safely
     for d in [dist_dir, build_dir]:
         if d.exists():
             try:
@@ -99,20 +98,23 @@ def build():
         "--collect-all=selenium",
         "--collect-all=openpyxl",
         "--collect-all=dotenv",
+        "--collect-all=allure_commons",
         f"--add-data={ROOT / 'common.py'}{os.pathsep}.",
-        f"--add-data={ROOT / 'dms_helper.py'}{os.pathsep}.",
-        f"--add-data={ROOT / 'explorer_helper.py'}{os.pathsep}.",
+        f"--add-data={ROOT / 'dms_config.py'}{os.pathsep}.",
+        f"--add-data={ROOT / 'allure_reporter.py'}{os.pathsep}.",
     ]
+
+    pages_dir = ROOT / "pages"
+    if pages_dir.exists():
+        pyinstaller_cmd.append(f"--add-data={pages_dir}{os.pathsep}pages")
 
     for tc_file in ROOT.glob("tc*.py"):
         pyinstaller_cmd.append(f"--add-data={tc_file}{os.pathsep}.")
 
-    # Bundle the core/ folder if present
     core_dir = ROOT / "core"
     if core_dir.exists():
         pyinstaller_cmd.append(f"--add-data={core_dir}{os.pathsep}core")
 
-    # Logo + app icon live in the assets/ folder
     assets_dir = ROOT / "assets"
     if assets_dir.exists():
         pyinstaller_cmd.append(f"--add-data={assets_dir}{os.pathsep}assets")
@@ -128,11 +130,13 @@ def build():
     print("[*] Copying runtime files into distribution folder...")
     for script_file in (
         list(ROOT.glob("tc*.py"))
-        + list(ROOT.glob("*_helper.py"))
-        + [ROOT / "common.py"]
+        + [ROOT / "common.py", ROOT / "dms_config.py", ROOT / "allure_reporter.py"]
     ):
         if script_file.exists():
             shutil.copy2(script_file, target_folder / script_file.name)
+
+    if pages_dir.exists():
+        shutil.copytree(pages_dir, target_folder / "pages", dirs_exist_ok=True)
 
     for asset in [".env", "Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx"]:
         src = ROOT / asset
@@ -142,7 +146,6 @@ def build():
             except PermissionError:
                 print(f"[!] Skipped overwriting locked file: {asset}")
 
-    # Copy core/ folder alongside the executable so core/.env and scripts are editable
     if core_dir.exists():
         shutil.copytree(
             core_dir, target_folder / "core", dirs_exist_ok=True

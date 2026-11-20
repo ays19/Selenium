@@ -15,31 +15,37 @@ import common as c
 
 TEST_CASE_ID = "DMS-TC130"
 
-DOC_TYPE = os.getenv("CHECKER_DOC_TYPE")  # a doc-type with a checker group, the second user is a checker
 
-
-def checker_list(driver, wait):
-    info = c.upload_document(driver, wait, "pdf", doc_type=DOC_TYPE, require_checker=True)
+def checker_list(session: c.DmsSession) -> tuple[bool, str]:
+    doc_type = os.getenv("CHECKER_DOC_TYPE", "").strip()
+    info = session.upload_document("pdf", doc_type=doc_type, require_checker=True)
     name = info["name"]
 
-    def look():
-        driver.get(c.REVIEW_URL)  # "Requested by others" is the default
-        shown = c.wait_text(driver, name, 10)
-        approve = c.find_near(driver, name, "approve") is not None
-        reject = c.find_near(driver, name, "reject") is not None
-        return shown, approve, reject
-    shown, approve, reject = c.as_other_user(driver, wait, look)
+    shown, approve, reject = session.as_other_user(
+        lambda: session.review.has_checker_actions(name)
+    )
     ok = shown and approve and reject
-    return ok, f"Checker sees the document: {'yes' if shown else 'NO'}, approve option: {'yes' if approve else 'NO'}, reject option: {'yes' if reject else 'NO'}. Maker and upload date filters are not checked by the script"
+    return ok, (
+        f"Checker sees the document: {'yes' if shown else 'NO'}, "
+        f"approve option: {'yes' if approve else 'NO'}, "
+        f"reject option: {'yes' if reject else 'NO'}. "
+        "Maker and upload date filters are not checked by the script"
+    )
 
 
 SCENARIOS = [("Checker pending list", checker_list)]
 
 
-def main():
-    c.need_other_user()
-    c.need_env("CHECKER_DOC_TYPE", "(search text of a doc-type that has a checker group, the second user is the checker)")
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(
+        TEST_CASE_ID,
+        SCENARIOS,
+        doc=__doc__,
+        need_other_user=True,
+        required_env=[
+            ("CHECKER_DOC_TYPE", "(search text of a doc-type that has a checker group, the second user is the checker)")
+        ],
+    )
 
 
 if __name__ == "__main__":

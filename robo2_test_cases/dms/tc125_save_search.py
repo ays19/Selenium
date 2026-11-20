@@ -11,22 +11,22 @@ An advanced search result should be saved
 from datetime import datetime
 
 import common as c
-import dms_helper as d
 
 TEST_CASE_ID = "DMS-TC125"
 
-def saving(driver, wait):
-    info = c.upload_document(driver, wait)
+
+def saving(session: c.DmsSession) -> tuple[bool, str]:
+    info = session.upload_document()
     search_name = datetime.now().strftime("AUTO_SEARCH_%H%M%S")
-    ok, message = d.save_search(driver, wait, search_name, info)
+    ok, message = session.explorer.save_search(search_name, info)
     return ok, f"{message} ({search_name})"
 
 
 SCENARIOS = [("Save search", saving)]
 
 
-def main():
-    c.run(TEST_CASE_ID, SCENARIOS)
+def main() -> None:
+    c.run_dms_test(TEST_CASE_ID, SCENARIOS, doc=__doc__)
 
 
 if __name__ == "__main__":
