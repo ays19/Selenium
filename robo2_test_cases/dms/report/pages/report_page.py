@@ -143,7 +143,21 @@ class ReportPage(BasePage):
         "status": ("status", "task status", "app status", "application status", "state"),
         "document name": ("document name", "document", "file name", "name"),
         "document type": ("document type", "doc type", "type"),
+        "metafield": ("metafield", "meta field", "metadata", "meta"),
     }
+    STANDARD_DOC_REPORT_HEADERS = frozenset({
+        "uploader",
+        "document name",
+        "doc type",
+        "document type",
+        "upload time",
+        "uploaded at",
+        "ocr status",
+        "archived at",
+        "archived by",
+        "action",
+        "actions",
+    })
     DATE_HEADER_KEYWORDS = (
         "date",
         "time",
@@ -716,6 +730,28 @@ class ReportPage(BasePage):
                 col_idx = next(
                     (i for term in candidates for i, h in enumerate(norm_headers) if term and term in h),
                     None,
+                )
+            if wanted == "metafield":
+                meta_cols = [
+                    i for term in candidates for i, h in enumerate(norm_headers)
+                    if term and (h == term or term in h)
+                ]
+                fallback_cols = [
+                    i for i, h in enumerate(norm_headers)
+                    if h
+                    and h not in self.STANDARD_DOC_REPORT_HEADERS
+                    and i not in col_map.values()
+                ]
+                candidate_cols = list(dict.fromkeys(meta_cols + fallback_cols))
+                col_idx = next(
+                    (
+                        i for i in candidate_cols
+                        if any(
+                            self._clean_discovered_value(label, row[i] if i < len(row) else "")
+                            for row in rows
+                        )
+                    ),
+                    col_idx,
                 )
             if col_idx is not None:
                 col_map[label] = col_idx

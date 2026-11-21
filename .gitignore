@@ -15,8 +15,6 @@ env/
 # Outputs, Debug & Test Files
 output/
 screenshots/
-debug/
-debug1/
 test_files/
 logs/
 build/

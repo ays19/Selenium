@@ -5,8 +5,9 @@ Run the Report test scripts one after another, with one terminal command.
     python run_all.py rep001 rep024   run only the files whose name starts with these
 
 Each test runs in its own process (its own Chrome window), so one broken test
-cannot stop the others. Output of every test is saved in logs/<test file>.log
-and Allure 2 results are written to ../allure-results/ (or REPORT_ALLURE_RESULTS_DIR).
+cannot stop the others. Output of failed, blocked, or timed-out tests is saved
+in logs/<test file>.log and Allure 2 results are written to ../allure-results/
+(or REPORT_ALLURE_RESULTS_DIR).
 Keep the Excel file closed while this runs.
 """
 import os
@@ -49,28 +50,43 @@ def resolve_allure_dir():
 
 
 def run_one(file):
-    """Run one test file. Returns (status, seconds)."""
+    """Run one test file. Save log only if non-passing. Returns (status, seconds)."""
     log_path = LOG_DIR / f"{file.stem}.log"
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     start = time.time()
-    with open(log_path, "w", encoding="utf-8") as log:
-        try:
-            result = subprocess.run(
-                [sys.executable, file.name],
-                cwd=FOLDER,
-                env=env,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                timeout=TIMEOUT_SECONDS,
-            )
-            if result.returncode == 0:
-                status = "PASS"
-            elif result.returncode == 2:
-                status = "BLOCKED"
-            else:
-                status = "FAIL"
-        except subprocess.TimeoutExpired:
-            status = "TIMEOUT"
+    output = ""
+    try:
+        result = subprocess.run(
+            [sys.executable, file.name],
+            cwd=FOLDER,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=TIMEOUT_SECONDS,
+        )
+        output = result.stdout or ""
+        if result.returncode == 0:
+            status = "PASS"
+        elif result.returncode == 2:
+            status = "BLOCKED"
+        else:
+            status = "FAIL"
+    except subprocess.TimeoutExpired as exc:
+        status = "TIMEOUT"
+        if isinstance(exc.output, bytes):
+            output = exc.output.decode("utf-8", errors="replace")
+        else:
+            output = exc.output or ""
+
+    if status == "PASS":
+        log_path.unlink(missing_ok=True)
+    else:
+        LOG_DIR.mkdir(exist_ok=True)
+        log_path.write_text(output, encoding="utf-8")
+
     return status, time.time() - start
 
 
@@ -81,8 +97,7 @@ def main():
         print("No test files found.")
         return 1
 
-    LOG_DIR.mkdir(exist_ok=True)
-    print(f"Running {len(tests)} test(s). Logs are in: {LOG_DIR}\n")
+    print(f"Running {len(tests)} test(s). Failure logs will be saved in: {LOG_DIR}\n")
 
     results = []
     for number, file in enumerate(tests, start=1):
@@ -90,6 +105,12 @@ def main():
         status, seconds = run_one(file)
         print(f"{status} ({seconds:.0f}s)")
         results.append((file.stem, status))
+
+    if LOG_DIR.is_dir() and not any(LOG_DIR.iterdir()):
+        try:
+            LOG_DIR.rmdir()
+        except OSError:
+            pass
 
     passed = sum(1 for _, st in results if st == "PASS")
     blocked = [(name, st) for name, st in results if st == "BLOCKED"]

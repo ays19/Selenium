@@ -44,7 +44,6 @@ HEADER_ROW: int = 4
 SAMPLE_DIR: Path = _resolve_dir("SAMPLE_DIR", "test_files", create=False)
 SCREENSHOT_DIR: Path = _resolve_dir("SCREENSHOT_DIR", "screenshots", create=True)
 DOWNLOAD_DIR: Path = _resolve_dir("DOWNLOAD_DIR", "downloads", create=True)
-DEBUG_DIR: Path = _resolve_dir("DEBUG_DIR", "debug", create=True)
 ALLURE_RESULTS_DIR: Path = _resolve_dir("DMS_ALLURE_RESULTS_DIR", "allure-results", create=True)
 
 # Application routes

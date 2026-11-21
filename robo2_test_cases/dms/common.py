@@ -193,16 +193,14 @@ def attach_failure_diagnostics(
     tb_text: str = "",
     reporter: AllureReporter | None = None,
 ) -> None:
+    if not (reporter and reporter.test_uuid):
+        return
     if driver:
         try:
-            html = driver.page_source
-            if reporter and reporter.test_uuid:
-                reporter.attach_html(html, f"Failure DOM ({slug})")
-            debug_file = cfg.DEBUG_DIR / f"{test_case_id}_{slug}.html"
-            debug_file.write_text(html, encoding="utf-8")
+            reporter.attach_html(driver.page_source, f"Failure DOM ({slug})")
         except Exception:
             pass
-    if tb_text and reporter and reporter.test_uuid:
+    if tb_text:
         reporter.attach_text(tb_text, f"Python Traceback ({slug})")
 
 

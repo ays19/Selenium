@@ -10,14 +10,13 @@ TEST_CASE_ID = "REP-TC037"
 ROUTE = "/dms/dms_report/archived-document-report/"
 
 
-def test_own_archived_document_record_report(session: c.ReportSession) -> str:
+def test_archived_document_record_report_user_scope(session: c.ReportSession) -> str:
     session.login_as_role("dms_user")
     session.open_report(ROUTE)
-    session.select_document_type()
-    return session.verify_scope("own")
+    return session.verify_document_type_rows()
 
 
 if __name__ == "__main__":
     c.run_report_test(
-        TEST_CASE_ID, ROUTE, test_own_archived_document_record_report, __doc__
+        TEST_CASE_ID, ROUTE, test_archived_document_record_report_user_scope, __doc__
     )
