@@ -137,6 +137,14 @@ REPORT_FILTERS: dict[str, dict] = {
         "filters": {"User": MANAGER_USER},
         "expected": "",
     },
+    "workflow_activity": {
+        "filters": {
+            "User": GENERAL_USER,
+            "Operation": "Create Process Category",
+            "Source IP": "192.168.51.201",
+        },
+        "expected": "",
+    },
 }
 
 
