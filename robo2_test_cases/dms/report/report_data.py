@@ -145,6 +145,11 @@ REPORT_FILTERS: dict[str, dict] = {
         },
         "expected": "",
     },
+    "custom_report": {
+        # Dynamic fields (App Number, User, Status) are read from the loaded table row.
+        "filters": {"User": ""},
+        "expected": "",
+    },
 }
 
 
@@ -170,7 +175,8 @@ def get_filter_data(report_key: str, labels: list[str]) -> tuple[dict[str, str],
 
     resolved: dict[str, str] = {}
     for label in labels:
-        value = (specific.get(label) or DEFAULT_FILTER_VALUES.get(label) or "").strip()
+        raw = specific[label] if label in specific else DEFAULT_FILTER_VALUES.get(label)
+        value = (raw or "").strip()
         if value:
             resolved[label] = value
 
