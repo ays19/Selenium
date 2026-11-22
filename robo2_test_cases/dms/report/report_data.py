@@ -150,6 +150,13 @@ REPORT_FILTERS: dict[str, dict] = {
         "filters": {"User": ""},
         "expected": "",
     },
+    "custom_report_filter": {
+        "filters": {
+            "Status": "Pending",
+            "Initiator Name": MANAGER_USER,
+        },
+        "expected": "Pending",
+    },
 }
 
 
