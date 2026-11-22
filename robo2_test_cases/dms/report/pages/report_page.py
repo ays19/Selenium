@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import re
 import time
+from urllib.parse import urlparse
 
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver.common.by import By
@@ -80,6 +81,8 @@ class ReportPage(BasePage):
         By.CSS_SELECTOR,
         ".select2-results__option:not(.loading-results):not(.select2-results__message)",
     )
+    CUSTOM_REPORT_CARD_LOCATOR = (By.CSS_SELECTOR, "#grid_report .card")
+    CUSTOM_REPORT_VIEW_LINK_LOCATOR = (By.CSS_SELECTOR, ".view-report a[href]")
     PAGE_SIZE_SELECTORS = (".dataTables_length select", "select[name$='_length']")
     EXPORT_ACTION_SELECTORS: dict[str, tuple[str, ...]] = {
         "copy": (
@@ -186,6 +189,65 @@ class ReportPage(BasePage):
         self.driver.get(base_url.rstrip("/") + self._requested_route)
         self.wait_for_page_load()
         self.wait_for_ajax_idle()
+
+    def open_custom_report(self, report_name: str = "") -> str:
+        """Open a saved custom report card from the Custom Report grid page."""
+        try:
+            WebDriverWait(self.driver, 12).until(
+                lambda _d: bool(
+                    self.driver.find_elements(By.CSS_SELECTOR, "#grid_report .card .view-report a[href]")
+                )
+            )
+        except TimeoutException as exc:
+            raise LookupError("No custom report cards were found on the Custom Report page.") from exc
+
+        cards = self.driver.find_elements(*self.CUSTOM_REPORT_CARD_LOCATOR)
+        wanted = report_name.strip().casefold()
+
+        candidates: list[tuple[str, str, str]] = []
+        for card in cards:
+            links = card.find_elements(*self.CUSTOM_REPORT_VIEW_LINK_LOCATOR)
+            if not links:
+                continue
+            href = (links[0].get_attribute("href") or "").strip()
+            if not href:
+                continue
+            titles = card.find_elements(By.CSS_SELECTOR, ".report-name")
+            title = (titles[0].text or titles[0].get_attribute("title") or "").strip() if titles else ""
+            candidates.append((href, title or "Custom Report", (card.text or "").strip()))
+
+        if wanted:
+            chosen = next(
+                (c for c in candidates if c[1].casefold() == wanted),
+                None,
+            ) or next(
+                (c for c in candidates if wanted in c[1].casefold() or wanted in c[2].casefold()),
+                None,
+            )
+            if chosen is None:
+                raise LookupError(f"Custom report '{report_name}' was not found on the Custom Report page.")
+            to_try = [chosen]
+        else:
+            if not candidates:
+                raise LookupError("No custom report card link was found on the Custom Report page.")
+            to_try = candidates
+
+        last_title = "Custom Report"
+        for href, title, _card_text in to_try:
+            last_title = title
+            parsed_path = urlparse(href).path
+            if parsed_path:
+                self._requested_route = "/" + parsed_path.strip("/")
+            self.driver.get(href)
+            self.wait_for_page_load()
+            self.wait_for_ajax_idle()
+            if wanted:
+                return title
+            headers, _rows = self.read_table_data(max_rows=1)
+            if headers:
+                return title
+
+        return last_title
 
     def is_access_denied(self) -> bool:
         body = self.body_text().casefold()

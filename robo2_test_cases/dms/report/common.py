@@ -128,6 +128,19 @@ class ReportSession:
             if check_accessible:
                 self.report_page.assert_accessible()
 
+    def open_custom_report(
+        self,
+        route: str,
+        report_name: str = "",
+        check_accessible: bool = True,
+    ) -> str:
+        self.open_report(route, check_accessible=False)
+        with self.step(f"Open custom report card ({report_name or 'first available'})"):
+            opened_name = self.report_page.open_custom_report(report_name)
+            if check_accessible:
+                self.report_page.assert_accessible()
+        return opened_name
+
     def select_document_type(self, doc_type: str = "") -> str:
         target = (doc_type or DEFAULT_DOC_TYPE).strip()
         if not target:
