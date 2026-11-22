@@ -132,6 +132,11 @@ REPORT_FILTERS: dict[str, dict] = {
         "filters": {"User": MANAGER_USER},
         "expected": "",
     },
+    "application_activity": {
+        # Dynamic fields (Project, App Number, Status) are read from the loaded table row.
+        "filters": {"User": MANAGER_USER},
+        "expected": "",
+    },
 }
 
 
