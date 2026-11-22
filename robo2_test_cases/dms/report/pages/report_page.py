@@ -497,6 +497,94 @@ class ReportPage(BasePage):
                 f"Unexpected {description} '{unexpected_text}' was visible in a restricted report."
             )
 
+    def assert_has_other_user_record(self, own_username: str, max_rows: int = 100) -> str:
+        """Verify at least one visible table row belongs to a user other than `own_username`."""
+        self.assert_has_rows(f"other-user check (excluding '{own_username}')")
+        table = self.report_table(timeout=10)
+        if table is None:
+            raise AssertionError("The report data table was not found.")
+
+        data = self.driver.execute_script(
+            "var tbl = arguments[0], limit = arguments[1];"
+            "function leafHeaders(root) {"
+            "  var trs = root ? root.querySelectorAll('thead tr') : [];"
+            "  if (!trs.length) return [];"
+            "  return Array.from(trs[trs.length - 1].querySelectorAll('th'))"
+            "    .map(function(th) { return (th.textContent || '').trim(); });"
+            "}"
+            "var headers = leafHeaders(tbl);"
+            "if (!headers.some(Boolean)) {"
+            "  var wrap = tbl.closest('.dataTables_wrapper');"
+            "  if (wrap) headers = leafHeaders(wrap.querySelector('.dataTables_scrollHead'));"
+            "}"
+            "var rows = [];"
+            "var trs = tbl.querySelectorAll('tbody tr');"
+            "for (var i = 0; i < trs.length && rows.length < limit; i++) {"
+            "  if (trs[i].querySelector('td.dataTables_empty')) continue;"
+            "  var cells = Array.from(trs[i].querySelectorAll('td'))"
+            "    .map(function(td) { return (td.textContent || '').trim(); });"
+            "  if (cells.length) rows.push(cells);"
+            "}"
+            "return {headers: headers, rows: rows};",
+            table,
+            max_rows,
+        )
+        headers = (data or {}).get("headers") or []
+        rows = (data or {}).get("rows") or []
+        if not rows:
+            raise AssertionError("Expected report data rows, but the table was empty.")
+
+        own_low = own_username.strip().casefold()
+        user_header_keywords = (
+            "user",
+            "initiator",
+            "participant",
+            "uploader",
+            "created by",
+            "updated by",
+            "owner",
+        )
+        user_cols = (
+            [
+                i for i, h in enumerate(headers)
+                if any(kw in self.normalize(h) for kw in user_header_keywords)
+            ]
+            if len(headers) == len(rows[0])
+            else []
+        )
+        placeholders = {"", "n/a", "-", "none", "null"}
+
+        for row in rows:
+            row_has_own = any(
+                f"({own_low})" in (c or "").casefold()
+                or (c or "").strip().casefold() == own_low
+                for c in row
+            )
+            if row_has_own:
+                continue
+
+            if user_cols:
+                for idx in user_cols:
+                    if idx >= len(row):
+                        continue
+                    cell = " ".join((row[idx] or "").split()).strip()
+                    if cell.casefold() in placeholders:
+                        continue
+                    match = re.search(r"\(([^()]+)\)", cell)
+                    extracted = (match.group(1) if match else cell).strip().casefold()
+                    if extracted and extracted not in placeholders and extracted != own_low:
+                        return cell
+            else:
+                for raw in row:
+                    cell = " ".join((raw or "").split()).strip()
+                    match = re.search(r"\(([a-zA-Z0-9._-]+)\)", cell)
+                    if match and match.group(1).strip().casefold() != own_low:
+                        return cell
+
+        raise AssertionError(
+            f"No record belonging to a user other than '{own_username}' was found in the report rows."
+        )
+
     # =========================================================================
     # 3. Dropdowns (Document Type Select2, User Selector, Selectpicker)
     # =========================================================================

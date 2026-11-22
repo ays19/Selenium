@@ -205,6 +205,16 @@ class ReportSession:
 
             return f"Role '{role}': report access verified."
 
+    def verify_other_user_visible(self, own_username: str = "") -> str:
+        """Verify at least one visible row belongs to a user other than the logged-in user."""
+        current_user = (own_username or get_profile(self.current_role).username).strip()
+        with self.step(f"Verify records from another user (besides '{current_user}') are visible"):
+            other_user = self.report_page.assert_has_other_user_record(current_user)
+        return (
+            f"Role '{self.current_role}': verified another user's record "
+            f"('{other_user}') is visible for '{current_user}'."
+        )
+
     def verify_user_dropdown_scope(self, visibility: str) -> str:
         """Verify scope on reports where the user filter is a dropdown instead of a table column."""
         with self.step(f"Verify user dropdown visibility scope: '{visibility}'"):
