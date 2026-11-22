@@ -32,7 +32,7 @@ DEFAULT_DATE_RANGE_DAYS = 30
 ROLE_EXPECTED_ALL_TEXT: dict[str, str] = {
     "core_report_manager": GENERAL_USER,
     "dms_report_manager": GENERAL_USER,
-    "wf_related_process_user": GENERAL_USER,
+    "wf_related_process_user": MANAGER_USER,
     "wf_admin": "admin",
     "wf_manager": "admin",
 }
