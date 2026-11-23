@@ -696,6 +696,7 @@ class AutomationRunnerGUI(tk.Tk):
         self.stop_requested = False
         self.ui_queue = queue.Queue()  # worker thread -> UI thread messages
         self.current_process = None
+        self.allure_server = None
 
         # Data for the selected module and cross-module tracking for charts
         self.tests = []  # [(test_id, script_name, description, mod_name, sheet_name)]
@@ -812,6 +813,19 @@ class AutomationRunnerGUI(tk.Tk):
         self.style.map(
             "Stop.TButton",
             background=[("active", "#DC2626"), ("disabled", "#94A3B8")],
+        )
+
+        self.style.configure(
+            "Allure.TButton",
+            font=("Segoe UI", 10, "bold"),
+            background=self.primary_color,
+            foreground="#FFFFFF",
+            borderwidth=0,
+            padding=(12, 6),
+        )
+        self.style.map(
+            "Allure.TButton",
+            background=[("active", self.brand_dark), ("disabled", "#94A3B8")],
         )
 
         self.style.configure(
@@ -1151,6 +1165,15 @@ class AutomationRunnerGUI(tk.Tk):
             width=8,
         )
         self.stop_btn.pack(side=tk.LEFT)
+
+        self.allure_btn = ttk.Button(
+            ctrl_box,
+            text="📊 Allure Report",
+            style="Allure.TButton",
+            command=self._open_allure_report,
+            width=16,
+        )
+        self.allure_btn.pack(side=tk.LEFT, padx=(8, 0))
 
         ttk.Button(
             ctrl_box,
@@ -1929,6 +1952,34 @@ class AutomationRunnerGUI(tk.Tk):
             except Exception:
                 pass
 
+    def _open_allure_report(self):
+        import allure_viewer
+
+        if self.allure_server is None:
+            self.allure_server = allure_viewer.AllureReportServer()
+        server = self.allure_server
+        self.allure_btn.configure(state=tk.DISABLED, text="Opening...")
+
+        def _worker():
+            try:
+                ok, msg = allure_viewer.open_allure_report(APP_DIR, server)
+            except Exception as exc:
+                self._ui(self._on_allure_done, False, "", str(exc))
+                return
+            self._ui(self._on_allure_done, ok, msg, "")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_allure_done(self, ok: bool, msg: str, err: str):
+        self.allure_btn.configure(state=tk.NORMAL, text="📊 Allure Report")
+        if err:
+            self._append_log(f"[!] Allure Report error: {err}")
+            messagebox.showerror("Allure Report Error", err)
+            return
+        self._append_log(msg)
+        if not ok:
+            messagebox.showinfo("Allure Report", msg)
+
     def _on_close(self):
         if self.is_running:
             if not messagebox.askyesno(
@@ -1937,6 +1988,11 @@ class AutomationRunnerGUI(tk.Tk):
                 return
             self.stop_requested = True
             self._kill_current_process()
+        if self.allure_server is not None:
+            try:
+                self.allure_server.stop()
+            except Exception:
+                pass
         self.destroy()
 
     def _ensure_excel_updated(
@@ -2177,11 +2233,16 @@ class AutomationRunnerGUI(tk.Tk):
         excel_path: str,
     ):
         """Runs one test file. Returns 'pass', 'fail' or 'stopped'."""
+        import allure_viewer
+
         env = {
             **os.environ,
             "PYTHONIOENCODING": "utf-8",
             "SHEET_NAME": sheet_name,
             "EXCEL_PATH": excel_path,
+            "DMS_ALLURE_RESULTS_DIR": str(
+                allure_viewer.resolve_allure_results_dir(APP_DIR)
+            ),
         }
 
         if getattr(sys, "frozen", False):

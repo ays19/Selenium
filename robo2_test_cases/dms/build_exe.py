@@ -171,9 +171,11 @@ def build():
         "--hidden-import=pluggy",
         "--hidden-import=attr",
         "--hidden-import=attrs",
+        "--hidden-import=allure_viewer",
         f"--add-data={ROOT / 'common.py'}{os.pathsep}.",
         f"--add-data={ROOT / 'dms_config.py'}{os.pathsep}.",
         f"--add-data={ROOT / 'allure_reporter.py'}{os.pathsep}.",
+        f"--add-data={ROOT / 'allure_viewer.py'}{os.pathsep}.",
     ]
 
     pages_dir = ROOT / "pages"
@@ -202,7 +204,12 @@ def build():
     print("[*] Copying runtime files into distribution folder...")
     for script_file in (
         list(ROOT.glob("tc*.py"))
-        + [ROOT / "common.py", ROOT / "dms_config.py", ROOT / "allure_reporter.py"]
+        + [
+            ROOT / "common.py",
+            ROOT / "dms_config.py",
+            ROOT / "allure_reporter.py",
+            ROOT / "allure_viewer.py",
+        ]
     ):
         if script_file.exists():
             shutil.copy2(script_file, target_folder / script_file.name)
