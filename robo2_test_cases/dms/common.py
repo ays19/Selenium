@@ -562,6 +562,7 @@ def run_dms_test(
                     chosen_shots = failed_shots if failed_shots else shot_paths
                     write_result(test_case_id, actual, excel_status, shot_paths=chosen_shots)
         except Exception as excel_error:
+            print(f"[!] Excel update failed: {excel_error}", flush=True)
             reporter.attach_text(
                 f"Excel update failed: {excel_error}\n{traceback.format_exc()}",
                 "Excel reporting error",

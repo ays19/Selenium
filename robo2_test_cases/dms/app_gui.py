@@ -69,6 +69,27 @@ def find_script_path(script_name: str) -> Path | None:
     return None
 
 
+def _resolve_default_excel() -> str:
+    """Prefer EXCEL_PATH from .env when it exists; fall back to a local copy next to the app."""
+    local_excel = APP_DIR / "Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx"
+    env_raw = os.getenv("EXCEL_PATH", "").strip()
+    if env_raw:
+        env_path = Path(env_raw)
+        if not env_path.is_absolute():
+            for base in (APP_DIR, APP_DIR.parent, APP_DIR.parent.parent):
+                cand = (base / env_path).resolve()
+                if cand.is_file():
+                    return str(cand)
+        elif env_path.is_file():
+            return str(env_path.resolve())
+    if local_excel.is_file():
+        return str(local_excel)
+    parent_excel = APP_DIR.parent / "Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx"
+    if parent_excel.is_file():
+        return str(parent_excel)
+    return env_raw or str(local_excel)
+
+
 # SUBPROCESS WORKER DISPATCHER
 
 def run_as_worker():
@@ -936,20 +957,14 @@ class AutomationRunnerGUI(tk.Tk):
         )
         self.module_dropdown.bind("<<ComboboxSelected>>", self._on_module_changed)
 
-        # Excel file (Always default to the Excel file next to the app, not a stale .env path)
+        # Excel file (Honor EXCEL_PATH from .env when available; fall back to local copy)
         ttk.Label(
             bar,
             text="Test Case Excel:",
             font=("Segoe UI", 9, "bold"),
             background=self.card_bg,
         ).grid(row=0, column=2, sticky=tk.W, padx=(0, 6), pady=4)
-        local_excel = APP_DIR / "Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx"
-        default_excel = (
-            str(local_excel)
-            if local_excel.exists()
-            else os.getenv("EXCEL_PATH", str(local_excel))
-        )
-        self.excel_var = tk.StringVar(value=default_excel)
+        self.excel_var = tk.StringVar(value=_resolve_default_excel())
         ttk.Entry(
             bar, textvariable=self.excel_var, width=44, font=("Segoe UI", 9)
         ).grid(row=0, column=3, sticky=tk.EW, padx=(0, 8), pady=4)
@@ -1742,10 +1757,17 @@ class AutomationRunnerGUI(tk.Tk):
     # Small helpers
 
     def _browse_excel(self):
+        current_raw = self.excel_var.get().strip()
+        current = Path(current_raw) if current_raw else None
+        initial_dir = (
+            str(current.parent)
+            if current and current.parent.is_dir()
+            else str(APP_DIR)
+        )
         f = filedialog.askopenfilename(
             title="Select Test Case Excel File",
             filetypes=[("Excel Files", "*.xlsx *.xls"), ("All Files", "*.*")],
-            initialdir=str(APP_DIR),
+            initialdir=initial_dir,
         )
         if f:
             self.excel_var.set(f)
@@ -1925,96 +1947,108 @@ class AutomationRunnerGUI(tk.Tk):
             import openpyxl
 
             wb = openpyxl.load_workbook(excel_path)
-            if sheet_name not in wb.sheetnames:
-                return
-            ws = wb[sheet_name]
+            try:
+                if sheet_name not in wb.sheetnames:
+                    return
+                ws = wb[sheet_name]
 
-            # Locate header row & columns
-            headers = {}
-            h_row_used = 4
-            for h_row in (4, 1, 2, 3, 5):
-                for col in range(1, ws.max_column + 1):
-                    txt = str(ws.cell(h_row, col).value or "").strip().lower()
-                    if txt:
-                        headers[col] = txt
-                if any("status" in t or "actual" in t for t in headers.values()):
-                    h_row_used = h_row
-                    break
-                headers.clear()
+                # Locate header row & columns
+                headers = {}
+                h_row_used = 4
+                for h_row in (4, 1, 2, 3, 5):
+                    for col in range(1, ws.max_column + 1):
+                        txt = str(ws.cell(h_row, col).value or "").strip().lower()
+                        if txt:
+                            headers[col] = txt
+                    if any("status" in t or "actual" in t for t in headers.values()):
+                        h_row_used = h_row
+                        break
+                    headers.clear()
 
-            def col_of(*keywords):
-                for kw in keywords:
-                    for col, txt in headers.items():
-                        if kw in txt:
-                            return col
-                return None
+                def col_of(*keywords):
+                    for kw in keywords:
+                        for col, txt in headers.items():
+                            if kw in txt:
+                                return col
+                    return None
 
-            col_actual = col_of("actual")
-            col_status = col_of("status")
-            col_evidence = col_of("remark", "evidence", "screenshot", "screen shot")
-            col_date = col_of("date")
-            col_tester = col_of("tester")
+                col_actual = col_of("actual")
+                col_status = col_of("status")
+                col_evidence = col_of("remark", "evidence", "screenshot", "screen shot")
+                col_date = col_of("date")
+                col_tester = col_of("tester")
 
-            target_row = None
-            for r in range(h_row_used + 1, ws.max_row + 1):
-                val = str(ws.cell(r, 1).value or "").strip().lower()
-                if val == test_id.strip().lower():
-                    target_row = r
-                    break
-
-            if target_row is None:
-                return
-
-            # Find screenshot inside screenshots/<test_id>/ if available
-            shot_file = None
-            for base in [APP_DIR, BUNDLE_DIR]:
-                tc_shot_dir = base / "screenshots" / test_id.strip()
-                if tc_shot_dir.is_dir():
-                    pngs = sorted(
-                        tc_shot_dir.glob("*.png"), key=lambda p: p.stat().st_mtime
-                    )
-                    if pngs:
-                        fails = [p for p in pngs if "_FAIL.png" in p.name]
-                        shot_file = str((fails[-1] if fails else pngs[-1]).resolve())
+                target_row = None
+                for r in range(h_row_used + 1, ws.max_row + 1):
+                    val = str(ws.cell(r, 1).value or "").strip().lower()
+                    if val == test_id.strip().lower():
+                        target_row = r
                         break
 
-            changed = False
-            status_label = "Pass" if status == "pass" else "Fail"
+                if target_row is None:
+                    return
 
-            if col_status and not ws.cell(target_row, col_status).value:
-                ws.cell(target_row, col_status).value = status_label
-                changed = True
+                # Find screenshot under SCREENSHOT_DIR (if set), else screenshots/<test_id>/
+                shot_roots: list[Path] = []
+                env_shot_dir = (os.getenv("SCREENSHOT_DIR") or "").strip()
+                if env_shot_dir:
+                    raw_shot = Path(env_shot_dir)
+                    shot_roots.append(
+                        raw_shot if raw_shot.is_absolute() else (APP_DIR / raw_shot).resolve()
+                    )
+                shot_roots.extend([APP_DIR / "screenshots", BUNDLE_DIR / "screenshots"])
 
-            if col_actual and not ws.cell(target_row, col_actual).value:
-                ws.cell(target_row, col_actual).value = (
-                    f"{desc} executed ({status_label})"
-                )
-                changed = True
+                shot_file = None
+                for shot_root in shot_roots:
+                    tc_shot_dir = shot_root / test_id.strip()
+                    if tc_shot_dir.is_dir():
+                        pngs = sorted(
+                            tc_shot_dir.glob("*.png"), key=lambda p: p.stat().st_mtime
+                        )
+                        if pngs:
+                            fails = [p for p in pngs if "_FAIL.png" in p.name]
+                            shot_file = str((fails[-1] if fails else pngs[-1]).resolve())
+                            break
 
-            if col_date and not ws.cell(target_row, col_date).value:
-                ws.cell(target_row, col_date).value = datetime.now().strftime(
-                    "%d-%b-%Y"
-                )
-                changed = True
+                changed = False
+                status_label = "Pass" if status == "pass" else "Fail"
 
-            if col_tester and not ws.cell(target_row, col_tester).value:
-                ws.cell(target_row, col_tester).value = os.getenv(
-                    "TESTER_NAME", "Automation"
-                )
-                changed = True
+                if col_status and not ws.cell(target_row, col_status).value:
+                    ws.cell(target_row, col_status).value = status_label
+                    changed = True
 
-            if col_evidence and shot_file:
-                cell = ws.cell(target_row, col_evidence)
-                cell.value = os.path.basename(shot_file)
-                cell.hyperlink = shot_file
-                cell.style = "Hyperlink"
-                changed = True
+                if col_actual and not ws.cell(target_row, col_actual).value:
+                    ws.cell(target_row, col_actual).value = (
+                        f"{desc} executed ({status_label})"
+                    )
+                    changed = True
 
-            if changed:
-                wb.save(excel_path)
-                self._log(
-                    f"   [Excel Updated]: Row {target_row} in '{sheet_name}' -> {status_label}"
-                )
+                if col_date and not ws.cell(target_row, col_date).value:
+                    ws.cell(target_row, col_date).value = datetime.now().strftime(
+                        "%d-%b-%Y"
+                    )
+                    changed = True
+
+                if col_tester and not ws.cell(target_row, col_tester).value:
+                    ws.cell(target_row, col_tester).value = os.getenv(
+                        "TESTER_NAME", "Automation"
+                    )
+                    changed = True
+
+                if col_evidence and shot_file and not ws.cell(target_row, col_evidence).value:
+                    cell = ws.cell(target_row, col_evidence)
+                    cell.value = os.path.basename(shot_file)
+                    cell.hyperlink = shot_file
+                    cell.style = "Hyperlink"
+                    changed = True
+
+                if changed:
+                    wb.save(excel_path)
+                    self._log(
+                        f"   [Excel Updated]: Row {target_row} in '{sheet_name}' -> {status_label}"
+                    )
+            finally:
+                wb.close()
         except Exception as e:
             self._log(f"   [!] Excel fallback check warning: {e}")
 

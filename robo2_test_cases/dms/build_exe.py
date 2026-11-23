@@ -3,6 +3,7 @@ Automated PyInstaller build script for Robo2mation Test Runner.
 Run with: python build_exe.py
 """
 
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -51,23 +52,83 @@ def ensure_unlocked_dist(dist_dir: Path):
                 pass
         except PermissionError:
             print(
-                "\n[!] WARNING: 'Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx' is open in Excel!"
+                "\n[!] WARNING: 'Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx' is open in Excel or locked!",
+                flush=True,
             )
-            try:
-                input(
-                    "    -> Please save & close Excel now, then press ENTER to continue..."
-                )
-            except EOFError:
-                pass
+            if sys.stdin and sys.stdin.isatty():
+                try:
+                    input(
+                        "    -> Please save & close Excel now, then press ENTER to continue..."
+                    )
+                except EOFError:
+                    pass
+
+
+REQUIRED_PACKAGES = (
+    "selenium",
+    "openpyxl",
+    "dotenv",
+    "allure_commons",
+    "pluggy",
+    "attrs",
+)
+
+
+def _reexec_in_venv_if_needed() -> None:
+    """Re-launch using the project .venv Python if required packages are missing here."""
+    missing = [pkg for pkg in REQUIRED_PACKAGES if importlib.util.find_spec(pkg) is None]
+    if not missing or os.environ.get("ROBO2_BUILD_REEXEC") == "1":
+        return
+
+    current_exe = os.path.normcase(os.path.abspath(sys.executable))
+    candidates = (
+        ROOT / ".venv" / "Scripts" / "python.exe",
+        ROOT.parent / ".venv" / "Scripts" / "python.exe",
+        ROOT.parent.parent / ".venv" / "Scripts" / "python.exe",
+    )
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        candidate_exe = os.path.normcase(os.path.abspath(str(candidate)))
+        if candidate_exe == current_exe:
+            continue
+        print(f"[*] Switching to project virtual environment: {candidate}", flush=True)
+        env = {**os.environ, "ROBO2_BUILD_REEXEC": "1"}
+        rc = subprocess.call(
+            [str(candidate), "-u", str(Path(__file__).resolve()), *sys.argv[1:]],
+            env=env,
+        )
+        raise SystemExit(rc)
+
+
+def _verify_required_packages() -> None:
+    """Fail fast if build_exe.py is invoked outside the venv where dependencies live."""
+    missing = [pkg for pkg in REQUIRED_PACKAGES if importlib.util.find_spec(pkg) is None]
+    if missing:
+        print(
+            "[!] ERROR: Missing required runtime package(s) in this Python environment: "
+            + ", ".join(missing)
+        )
+        print(f"    Current interpreter: {sys.executable}")
+        print(
+            "    Run this build script from the project virtual environment (.venv) or install: "
+            + " ".join(missing)
+        )
+        raise SystemExit(1)
 
 
 def build():
+    _reexec_in_venv_if_needed()
+    _verify_required_packages()
     kill_old_processes()
 
-    print("[*] Installing/Verifying PyInstaller...")
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "--upgrade", "pyinstaller"]
-    )
+    if importlib.util.find_spec("PyInstaller") is None:
+        print("[*] Installing PyInstaller...")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "pyinstaller"]
+        )
+    else:
+        print("[*] PyInstaller verified.")
 
     dist_dir = ROOT / "dist"
     build_dir = ROOT / "build"
@@ -99,6 +160,17 @@ def build():
         "--collect-all=openpyxl",
         "--collect-all=dotenv",
         "--collect-all=allure_commons",
+        "--collect-all=pluggy",
+        "--collect-all=attrs",
+        "--hidden-import=allure_commons",
+        "--hidden-import=allure_commons.types",
+        "--hidden-import=allure_commons.lifecycle",
+        "--hidden-import=allure_commons.logger",
+        "--hidden-import=allure_commons.model2",
+        "--hidden-import=allure_commons.utils",
+        "--hidden-import=pluggy",
+        "--hidden-import=attr",
+        "--hidden-import=attrs",
         f"--add-data={ROOT / 'common.py'}{os.pathsep}.",
         f"--add-data={ROOT / 'dms_config.py'}{os.pathsep}.",
         f"--add-data={ROOT / 'allure_reporter.py'}{os.pathsep}.",
@@ -123,7 +195,7 @@ def build():
             pyinstaller_cmd.append(f"--icon={icon}")
 
     pyinstaller_cmd.append(str(ROOT / "app_gui.py"))
-    subprocess.check_call(pyinstaller_cmd)
+    subprocess.check_call(pyinstaller_cmd, cwd=str(ROOT))
 
     target_folder = dist_dir / "Robo2mation_Runner"
 
@@ -139,7 +211,7 @@ def build():
         shutil.copytree(pages_dir, target_folder / "pages", dirs_exist_ok=True)
 
     for asset in [".env", "Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx"]:
-        src = ROOT / asset
+        src = ROOT / asset if (ROOT / asset).exists() else (ROOT.parent / asset)
         if src.exists():
             try:
                 shutil.copy2(src, target_folder / asset)

@@ -16,8 +16,9 @@ def document_name_convention(session: c.DmsSession) -> tuple[bool, str]:
     doc_type = os.getenv("NAME_CONVENTION_DOC_TYPE", "").strip()
     pending_name = session.upload.prepare_upload("pdf", doc_type)
     selected = session.upload.current_doc_type()
-    wanted = doc_type.strip("/").split("/")[-1]
-    if wanted.lower() != selected.lower():
+    selected_norm = selected.strip("/").lower()
+    wanted_norm = doc_type.strip("/").lower()
+    if selected_norm != wanted_norm and selected_norm.split("/")[-1] != wanted_norm:
         raise c.SetupError(f"doc-type '{doc_type}' was not selected (the page shows '{selected}')")
 
     convention = session.upload.convention_of_selected_doc_type()
