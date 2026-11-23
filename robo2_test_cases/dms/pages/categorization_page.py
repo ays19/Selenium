@@ -86,9 +86,9 @@ class CategorizationPage(BasePage):
     return false;
     """
 
-    # ------------------------------------------------------------------
+    
     # Tree Selection & More Menu Helpers
-    # ------------------------------------------------------------------
+    
 
     def open_root(self) -> None:
         self.driver.get(cfg.ROOT_URL)
@@ -204,9 +204,9 @@ class CategorizationPage(BasePage):
             return
         self.click_label(item_id_or_label)
 
-    # ------------------------------------------------------------------
+    
     # Category / Doc-Type CRUD (DMS-TC067, TC069, TC073)
-    # ------------------------------------------------------------------
+    
 
     def _submit_add_modal(self, name: str, wanted_txt: str, parent: str | None) -> tuple[bool, str, str]:
         modal_id = "add_new_cat_doc" if parent else "add_parent_new_cat_doc"
@@ -245,7 +245,13 @@ class CategorizationPage(BasePage):
         if parent:
             self._enter_folder(parent)
         ok, message, _ = self._submit_add_modal(name, "Document", parent)
-        return ok, f"{message} ({name})"
+        if not ok:
+            return False, f"{message} ({name})"
+        try:
+            self._find_doc_list_row(name)
+            return True, f"{message} ({name})"
+        except TimeoutException:
+            return False, f"{message}, but '{name}' is NOT listed in #all_doc_list"
 
     def create_category(self, name: str, kind: str = "doc-type", parent: str | None = None) -> tuple[bool, str]:
         self.open_folder(None)
@@ -255,7 +261,13 @@ class CategorizationPage(BasePage):
             self._enter_folder(parent)
         wanted_txt = "Document" if "doc" in kind.lower() else "Category"
         ok, message, _ = self._submit_add_modal(name, wanted_txt, parent)
-        return ok, message
+        if not ok:
+            return False, message
+        try:
+            self._find_doc_list_row(name)
+            return True, message
+        except TimeoutException:
+            return False, f"{message}, but '{name}' is NOT listed in #all_doc_list"
 
     def new_doc_type(self, parent: str | None = None) -> str:
         name = datetime.now().strftime("AUTO_DT_%H%M%S")
@@ -287,7 +299,14 @@ class CategorizationPage(BasePage):
         box.clear()
         box.send_keys(new)
         button = modal.find_element(By.CSS_SELECTOR, "button[type='submit']")
-        return self.message_after(lambda: self.click(button))
+        ok, message = self.message_after(lambda: self.click(button))
+        if not ok:
+            return False, message
+        try:
+            self._find_doc_list_row(new)
+            return True, message
+        except TimeoutException:
+            return False, f"{message}, but renamed item '{new}' is NOT listed in #all_doc_list"
 
     def delete_category(self, name: str) -> tuple[bool, str]:
         self.open_folder(self._item_parents.get(name))
@@ -295,13 +314,30 @@ class CategorizationPage(BasePage):
 
         def _action():
             self.click_more_menu_item("delete_btn")
-            self.confirm("yes", seconds=15)
+            if not self.confirm("yes", seconds=15):
+                raise AssertionError("Confirmation modal did not appear for category deletion")
 
-        return self.message_after(_action)
+        ok, message = self.message_after(_action)
+        if not ok:
+            return False, message
 
-    # ------------------------------------------------------------------
+        q = self.xpath_text(name)
+        xp = (
+            f"//table[@id='all_doc_list']//tr[contains(@class,'clickie')]"
+            f"[td[1][normalize-space(.)={q} or starts-with(normalize-space(.), concat({q}, ' ('))]]"
+        )
+        try:
+            WebDriverWait(self.driver, 8).until(
+                lambda d: not any(e.is_displayed() for e in d.find_elements(By.XPATH, xp))
+            )
+            gone = True
+        except TimeoutException:
+            gone = False
+        return gone, message + ("" if gone else f". '{name}' is STILL listed in #all_doc_list")
+
+    
     # Deleted Categories (DMS-TC075, TC076, TC077, TC078)
-    # ------------------------------------------------------------------
+    
 
     def _find_deleted_row(self, name: str, cat_only: bool = False):
         prefix = "//tr[@data-type='cat']" if cat_only else "//tr[contains(@class,'clickie')]"
@@ -325,7 +361,8 @@ class CategorizationPage(BasePage):
 
         def _action():
             row.find_element(By.CSS_SELECTOR, "td.restore").click()
-            self.confirm("yes", seconds=15)
+            if not self.confirm("yes", seconds=15):
+                raise AssertionError("Confirmation modal did not appear for category restore")
 
         ok, message = self.message_after(_action)
         if not ok:
@@ -350,14 +387,16 @@ class CategorizationPage(BasePage):
 
         def _action():
             row.find_element(By.CSS_SELECTOR, "td.delete").click()
-            self.confirm("yes", seconds=15)
+            if not self.confirm("yes", seconds=15):
+                raise AssertionError("Confirmation modal did not appear for permanent deletion")
 
         ok, message = self.message_after(_action)
         if not ok:
             return False, message
 
         self.open_deleted_root()
-        self.wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, "tr.clickie"))
+        self.wait.until(lambda d: d.find_elements(By.CSS_SELECTOR, "table"))
+        self.wait_for_ajax_idle(timeout=5)
         still_there = self._find_deleted_row(name) is not None
         return (not still_there), f"{message}. '{name}' " + (
             "is STILL in the deleted list" if still_there else "is gone from the deleted list"
@@ -368,9 +407,9 @@ class CategorizationPage(BasePage):
         row = self.wait.until(lambda _d: self._find_deleted_row(name))
         return row.find_elements(By.TAG_NAME, "td")[-1].text.strip()
 
-    # ------------------------------------------------------------------
+    
     # Doc-Type Settings: Publish, Groups, Notify (DMS-TC080 - TC084)
-    # ------------------------------------------------------------------
+    
 
     def publish_doc_type(self, name: str) -> tuple[bool, str]:
         self.open_folder(self._item_parents.get(name))
@@ -378,34 +417,23 @@ class CategorizationPage(BasePage):
 
         def _do_publish():
             self.click_more_menu_item("pub_per")
-            try:
-                self.pick_bootstrap_select(
-                    "publish_select",
-                    "Published",
-                    root_xpath="//div[@id='publish_modal']",
-                    timeout=3,
-                )
-                save = WebDriverWait(self.driver, 3).until(
-                    EC.element_to_be_clickable((By.ID, "save_publish"))
-                )
-                self.click(save)
-            except Exception:
-                pass
+            self.wait.until(EC.visibility_of_element_located((By.ID, "publish_modal")))
+            self.pick_bootstrap_select(
+                "publish_select",
+                "Published",
+                root_xpath="//div[@id='publish_modal']",
+                timeout=8,
+            )
+            save = self.wait.until(EC.element_to_be_clickable((By.ID, "save_publish")))
+            self.click(save)
 
-        try:
-            ok, message = self.message_after(_do_publish)
-        except Exception:
-            ok, message = None, "Document type published"
-
+        ok, message = self.message_after(_do_publish)
         self.wait_for_ajax_idle(timeout=5)
         self.open_folder(self._item_parents.get(name))
         row = self._find_doc_list_row(name)
         status = row.find_elements(By.TAG_NAME, "td")[2].text.strip()
-        passed = status == "Published" and ok is not False
-        return passed, (
-            f"{message} ({name}). Status column shows '{status}'. "
-            "Access for a permitted general user is not checked by the script"
-        )
+        passed = bool(ok) and status == "Published"
+        return passed, f"{message} ({name}). Status column shows '{status}'"
 
     def assign_group(self, name: str, kind: str = "access") -> tuple[bool, str]:
         """Assign the first Access or Owner group to `name` and verify the Groups column."""
@@ -427,25 +455,17 @@ class CategorizationPage(BasePage):
         # Close dropdown then Save
         self.click(self.driver.find_element(By.CSS_SELECTOR, "#group_modal .modal-title"))
         save = self.wait.until(EC.element_to_be_clickable((By.ID, "save_grp")))
-        try:
-            ok, message = self.message_after(lambda: self.click(save))
-        except Exception:
-            ok, message = None, "confirmation message was not captured"
+        ok, message = self.message_after(lambda: self.click(save))
 
         self.wait_for_ajax_idle(timeout=5)
         self.open_folder(self._item_parents.get(name))
         row = self._find_doc_list_row(name)
         groups = row.find_elements(By.TAG_NAME, "td")[3].text.strip()
         expected = f"{group} (OG)" if kind == "owner" else group
-        passed = expected.lower() in groups.lower() and ok is not False
-        note = (
-            "The DMS Owner permissions of the group members are not checked by the script"
-            if kind == "owner"
-            else "Access for users of the assigned group is not checked by the script"
-        )
-        return passed, f"{message} ({name}, {kind} group '{group}'). Groups column shows '{groups}'. {note}"
+        passed = bool(ok) and expected.lower() in groups.lower()
+        return passed, f"{message} ({name}, {kind} group '{group}'). Groups column shows '{groups}'"
 
-    def toggle_notify(self, name: str, expect: str) -> tuple[bool | None, str]:
+    def toggle_notify(self, name: str, expect: str) -> tuple[bool, str]:
         self.open_folder(self._item_parents.get(name))
         self.select_tree_item(name)
         self.click(self.wait.until(EC.element_to_be_clickable(self.MORE_BTN)))
@@ -454,10 +474,7 @@ class CategorizationPage(BasePage):
         label = " ".join(button.text.split())
         if label.lower() != f"notify {expect.lower()}":
             raise SetupError(f"menu shows '{label}', expected 'Notify {expect.title()}'")
-        try:
-            return self.message_after(lambda: self.click(button))
-        except Exception:
-            return None, "confirmation message was not captured"
+        return self.message_after(lambda: self.click(button))
 
     def is_notify_on(self, name: str) -> bool:
         self.wait_for_ajax_idle(timeout=5)
@@ -465,10 +482,9 @@ class CategorizationPage(BasePage):
         row = self._find_doc_list_row(name)
         return "notification:true" in (row.get_attribute("data-info") or "").replace(" ", "")
 
-    # ------------------------------------------------------------------
+    
     # Metadata CRUD (DMS-TC085, TC086, TC087)
-    # ------------------------------------------------------------------
-
+    
     def next_metadata_order(self) -> int:
         used = []
         for row in self.driver.find_elements(By.CSS_SELECTOR, "tr.clickie[data-type='meta']"):
@@ -490,9 +506,16 @@ class CategorizationPage(BasePage):
         box.clear()
         box.send_keys(text)
 
-    def create_metadata_string_form(self, doc_type: str, display: str) -> tuple[bool | None, str]:
-        """Open `doc_type`, fill the Add Meta modal explicitly with String type, Save, and verify."""
+    def create_metadata_string_form(
+        self,
+        doc_type: str,
+        display: str,
+        data_type: str = "String",
+        dropdown_values: str | None = None,
+    ) -> tuple[bool, str]:
+        """Open `doc_type`, fill the Add Meta modal explicitly (`data_type`), Save, and verify."""
         self.open_doc_type_metadata(doc_type)
+        order = self.next_metadata_order()
         self.click(self.wait.until(EC.element_to_be_clickable(self.ADD_BTN)))
         self.wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, self.ADD_META_MODAL)))
         self.wait_for_ajax_idle(timeout=3)
@@ -500,21 +523,35 @@ class CategorizationPage(BasePage):
         variable = re.sub(r"[^a-zA-Z0-9_]", "_", display.lower()).strip("_")
         self._type_into_add_meta("input[name='title']", variable)
         self._type_into_add_meta("input[name='displayname']", display)
-        self._type_into_add_meta("input[name='min']", "1")
-        self._type_into_add_meta("input[name='max']", "50")
 
         self.pick_bootstrap_select(
             "add_meta_type",
-            "String",
+            data_type,
             root_xpath="//div[@id='add_new_metafield']",
         )
-        save = self.wait.until(EC.element_to_be_clickable((By.ID, "save_metafield")))
-        try:
-            ok, message = self.message_after(lambda: self.click(save))
-        except Exception:
-            ok, message = None, "confirmation message was not captured"
+        self.set_metadata_order(order)
 
-        if not self.wait_text(display, 10):
+        if self.visible(f"{self.ADD_META_MODAL} input[name='min']"):
+            self._type_into_add_meta("input[name='min']", "1")
+        if self.visible(f"{self.ADD_META_MODAL} input[name='max']"):
+            self._type_into_add_meta("input[name='max']", "50")
+        if dropdown_values and self.visible(f"{self.ADD_META_MODAL} input[name='default_text']"):
+            self._type_into_add_meta("input[name='default_text']", dropdown_values)
+
+        save = self.wait.until(EC.element_to_be_clickable((By.ID, "save_metafield")))
+        ok, message = self.message_after(lambda: self.click(save))
+
+        q = self.xpath_text(display)
+        meta_row_xpath = f"//tr[@data-type='meta' and contains(@class,'clickie')][td[contains(normalize-space(.), {q})]]"
+        try:
+            WebDriverWait(self.driver, 10).until(
+                lambda d: any(r.is_displayed() for r in d.find_elements(By.XPATH, meta_row_xpath))
+            )
+            listed = True
+        except TimeoutException:
+            listed = False
+
+        if not listed:
             errors = [
                 e.text.strip()
                 for e in self.driver.find_elements(By.CSS_SELECTOR, f"{self.ADD_META_MODAL} .parsley-errors-list li")
@@ -523,7 +560,7 @@ class CategorizationPage(BasePage):
             if errors:
                 raise SetupError(f"meta-data was not created. Form errors: {errors}")
             return False, f"{message} ('{display}' in {doc_type}). Meta field is NOT listed"
-        return (ok is not False), f"{message} ('{display}' in {doc_type}). Meta field is listed"
+        return bool(ok), f"{message} ('{display}' [{data_type}] in {doc_type}). Meta field is listed"
 
     def create_metadata(
         self,
@@ -596,13 +633,18 @@ class CategorizationPage(BasePage):
         box.clear()
         box.send_keys(new_display)
         save = self.wait.until(EC.element_to_be_clickable((By.ID, "update_meta_save")))
-        try:
-            ok, message = self.message_after(lambda: self.click(save))
-        except Exception:
-            ok, message = None, "confirmation message was not captured"
+        ok, message = self.message_after(lambda: self.click(save))
 
-        shown = self.wait_text(new_display, 10)
-        passed = shown and ok is not False
+        q = self.xpath_text(new_display)
+        meta_row_xpath = f"//tr[@data-type='meta' and contains(@class,'clickie')][td[contains(normalize-space(.), {q})]]"
+        try:
+            WebDriverWait(self.driver, 10).until(
+                lambda d: any(r.is_displayed() for r in d.find_elements(By.XPATH, meta_row_xpath))
+            )
+            shown = True
+        except TimeoutException:
+            shown = False
+        passed = bool(ok) and shown
         return passed, f"{message} ('{display}' -> '{new_display}'). " + (
             "New display name is listed" if shown else "New display name is NOT listed"
         )
@@ -612,23 +654,24 @@ class CategorizationPage(BasePage):
 
         def _do_delete():
             self.click_more_menu_item("delete_btn")
-            self.confirm("yes", seconds=15)
+            if not self.confirm("yes", seconds=15):
+                raise AssertionError("Confirmation modal did not appear for metadata deletion")
 
+        ok, message = self.message_after(_do_delete)
+        q = self.xpath_text(display)
+        meta_row_xpath = f"//tr[@data-type='meta' and contains(@class,'clickie')][td[contains(normalize-space(.), {q})]]"
         try:
-            ok, message = self.message_after(_do_delete)
-        except Exception:
-            ok, message = None, "Metadata deleted successfully"
-
-        try:
-            WebDriverWait(self.driver, 10).until(lambda _d: display.lower() not in self.body_text())
+            WebDriverWait(self.driver, 10).until(
+                lambda d: not any(r.is_displayed() for r in d.find_elements(By.XPATH, meta_row_xpath))
+            )
             removed = True
         except TimeoutException:
             removed = False
-        return (removed and ok is not False), message
+        return bool(ok) and removed, message + ("" if removed else f". '{display}' is STILL listed")
 
-    # ------------------------------------------------------------------
+    
     # Metadata Uniqueness Rules (DMS-TC090, TC091, TC092)
-    # ------------------------------------------------------------------
+    
 
     @staticmethod
     def _field_names(display: str) -> list[str]:
@@ -702,7 +745,7 @@ class CategorizationPage(BasePage):
             if not (self.driver.current_url or "").startswith(cfg.BASE_URL):
                 self.open_root()
             self.driver.set_script_timeout(30)
-            self.driver.execute_async_script("""
+            result = self.driver.execute_async_script("""
                 var cb = arguments[arguments.length - 1];
                 var pairs = arguments[0];
                 function getCookie(n) {
@@ -713,6 +756,7 @@ class CategorizationPage(BasePage):
                 var csrf = (el && el.value) || getCookie('csrftoken') || '';
                 var targetNames = new Set(pairs.map(p => p[0]));
                 var parentNames = Array.from(new Set(pairs.map(p => p[1]).filter(Boolean)));
+                var errors = [];
                 (async () => {
                     try {
                         var roots = await fetch('/api/v1/dms/categorization/root/').then(r => r.json());
@@ -728,28 +772,32 @@ class CategorizationPage(BasePage):
                         }
                         for (var item of candidates) {
                             try {
-                                await fetch('/api/v1/dms/categorization/category/' + item.id + '/', {
+                                var r1 = await fetch('/api/v1/dms/categorization/category/' + item.id + '/', {
                                     method: 'DELETE',
                                     headers: {'X-CSRFToken': csrf, 'Content-Type': 'application/x-www-form-urlencoded'},
                                     body: 'csrfmiddlewaretoken=' + encodeURIComponent(csrf)
                                 });
-                            } catch (e) {}
+                                if (!r1.ok) errors.push('DELETE ' + item.id + ':' + r1.status);
+                            } catch (e) { errors.push('DELETE ' + item.id + ':' + e); }
                         }
                         var deleted = await fetch('/api/v1/dms/categorization/category/deleted_category/').then(r => r.json());
                         for (var d of (Array.isArray(deleted) ? deleted : [])) {
                             if (targetNames.has(d.name)) {
                                 try {
-                                    await fetch('/api/v1/dms/categorization/category/permanent_deleted_category/', {
+                                    var r2 = await fetch('/api/v1/dms/categorization/category/permanent_deleted_category/', {
                                         method: 'POST',
                                         headers: {'X-CSRFToken': csrf, 'Content-Type': 'application/json; charset=utf-8'},
                                         body: JSON.stringify({id: d.id})
                                     });
-                                } catch (e) {}
+                                    if (!r2.ok) errors.push('PERM ' + d.id + ':' + r2.status);
+                                } catch (e) { errors.push('PERM ' + d.id + ':' + e); }
                             }
                         }
-                    } catch (e) {}
-                    cb(true);
+                    } catch (e) { errors.push(String(e)); }
+                    cb({ok: errors.length === 0, errors: errors});
                 })();
             """, [list(pair) for pair in items])
-        except Exception:
-            pass
+            if isinstance(result, dict) and not result.get("ok"):
+                print(f"   [Warning] categorization cleanup non-OK: {result.get('errors')}")
+        except Exception as exc:
+            print(f"   [Warning] categorization cleanup error: {exc}")

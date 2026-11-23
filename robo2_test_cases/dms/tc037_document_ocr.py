@@ -11,26 +11,39 @@ import common as c
 TEST_CASE_ID = "DMS-TC037"
 
 
-def ocr(ext: str):
-    def _scenario(session: c.DmsSession) -> tuple[bool, str]:
-        info = session.upload_document(ext)
-        name = info["name"]
-        session.explorer.open_document(name)
-        session.document.wait_for_page_load()
-        session.document.expand_system_metadata()
+def _attach_pending(session: c.DmsSession, ext: str) -> str:
+    sample = session.upload.find_sample_file(ext)
+    if not sample:
+        raise c.SetupError(f"no .{ext} sample file in {c.SAMPLE_DIR}")
+    return session.upload.attach_and_get_pending_names([sample[1]])[0]
 
-        ocr_status = session.document.read_ocr_status()
-        if not ocr_status or ocr_status.upper() == "N/A":
-            return False, (
-                f"OCR was not enabled for uploaded .{ext} document '{name}' "
-                f"(OCR Status: {ocr_status or 'missing'})"
-            )
-        return True, f"Document '{name}' (.{ext}) uploaded with OCR enabled (OCR Status: {ocr_status})"
+
+def non_ocr_doc_has_no_icon(session: c.DmsSession) -> tuple[bool, str]:
+    pending_name = _attach_pending(session, "docx")
+    has_icon = session.upload.has_ocr_icon(pending_name)
+    if has_icon:
+        return False, f"OCR icon unexpectedly appeared for non-PDF/image file '{pending_name}'"
+    return True, f"Non-PDF/image file '{pending_name}' correctly has no OCR Document icon"
+
+
+def ocr_pending_file(ext: str):
+    def _scenario(session: c.DmsSession) -> tuple[bool, str]:
+        pending_name = _attach_pending(session, ext)
+        if not session.upload.has_ocr_icon(pending_name):
+            return False, f"OCR Document icon (.ocr-item) not shown for pending .{ext} file '{pending_name}'"
+        ok, msg = session.upload.run_pending_ocr(pending_name, timeout=60)
+        if not ok:
+            return False, f"Pending OCR failed for '{pending_name}': {msg}"
+        return True, f"Pending OCR succeeded for .{ext} file '{pending_name}': {msg}"
 
     return _scenario
 
 
-SCENARIOS = [("OCR pdf", ocr("pdf")), ("OCR png", ocr("png"))]
+SCENARIOS = [
+    ("Non-PDF/Image (.docx) has no OCR icon", non_ocr_doc_has_no_icon),
+    ("OCR .pdf in Pending Documents", ocr_pending_file("pdf")),
+    ("OCR .png in Pending Documents", ocr_pending_file("png")),
+]
 
 
 def main() -> None:

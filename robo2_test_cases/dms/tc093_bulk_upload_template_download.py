@@ -17,7 +17,21 @@ def template_download(session: c.DmsSession) -> tuple[bool, str]:
     doc_type = os.getenv("BULK_DOC_TYPE", "").strip()
     path = session.bulk_upload.download_template(doc_type)
     size = os.path.getsize(path)
-    return size > 0, f"Template downloaded: {os.path.basename(path)} ({size} bytes)"
+    header = session.bulk_upload.template_header(path)
+    doc_id = session.bulk_upload.selected_doc_type_id()
+    meta_fields, _ = session.bulk_upload.fetch_metadata_and_unique_values(doc_id)
+
+    expected_meta_cols = {title.upper() for title in meta_fields}
+    actual_cols = [col.strip().upper() for col in header]
+    has_required_cols = (
+        len(actual_cols) >= 3
+        and actual_cols[0] == "DOCUMENT_NAME"
+        and "__FILE_NAME" in actual_cols
+        and "STATUS" in actual_cols
+        and expected_meta_cols.issubset(set(actual_cols))
+    )
+    ok = size > 0 and has_required_cols
+    return ok, f"Template downloaded: {os.path.basename(path)} ({size} bytes), header={header}"
 
 
 SCENARIOS = [("Template download", template_download)]

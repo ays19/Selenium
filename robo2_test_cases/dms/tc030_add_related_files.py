@@ -22,10 +22,10 @@ def add_related(session: c.DmsSession) -> tuple[bool, str]:
         return False, message
 
     shown = session.document.is_related_shown(second["name"])
-    return shown, (
-        f"{message}. Related file '{second['name']}' "
-        + ("shown in related files" if shown else "NOT shown in related files")
-    )
+    if not shown:
+        return False, f"{message}. Related file '{second['name']}' NOT shown in #relatedFiles"
+    preview_ok, preview_msg = session.document.view_related_file(second["name"])
+    return preview_ok, f"{message}. {preview_msg}"
 
 
 SCENARIOS = [("Add related file", add_related)]

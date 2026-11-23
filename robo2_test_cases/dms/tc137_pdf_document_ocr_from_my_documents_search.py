@@ -22,19 +22,18 @@ def ocr_explorer_search(session: c.DmsSession) -> tuple[bool, str]:
 
     info = session.upload_document("pdf", doc_type=doc_type)
     name = info["name"]
-    ok, status_msg = session.open_and_wait_for_ocr(name)
+    ok, status_msg = session.open_and_wait_for_ocr(name, timeout_seconds=60)
     if not ok:
         return False, f"{status_msg} for document '{name}'"
 
-    session.explorer.open()
-    session.explorer.advanced_search(
-        None, match_all=False, doc_type=info["doc_type"], extra=[("content search", search_text)]
-    )
-    shown = name.lower() in session.explorer.body_text()
-    return shown, (
-        f"Content search '{search_text}' in My Documents "
-        + ("shows the document" if shown else "does NOT show the document")
-        + f" ({status_msg})"
+    pos_found, pos_rows = session.explorer.explorer_content_search(info["doc_type"], search_text, name)
+    neg_query = "ZZZ_NO_MATCH_99999"
+    neg_found, _ = session.explorer.explorer_content_search(info["doc_type"], neg_query, name)
+
+    passed = pos_found and not neg_found
+    return passed, (
+        f"Explorer content search '{search_text}' found='{pos_found}' ({len(pos_rows)} row(s)), "
+        f"negative '{neg_query}' found='{neg_found}' ({status_msg})"
     )
 
 

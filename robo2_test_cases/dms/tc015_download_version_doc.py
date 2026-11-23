@@ -6,6 +6,8 @@ Download version doc
 3. Click on "Download" icon
 Version doc should be downloaded
 """
+import os
+
 import common as c
 
 TEST_CASE_ID = "DMS-TC015"
@@ -24,9 +26,13 @@ def version_download(session: c.DmsSession) -> tuple[bool, str]:
         raise c.SetupError(f"version doc could not be added ({message})")
 
     file_name = session.document.download_version(EXTENDED_NAME)
-    if file_name:
-        return True, f"Version doc downloaded: {file_name}"
-    return False, "no file was downloaded after clicking the Download icon of the version"
+    if not file_name:
+        return False, "no file was downloaded after clicking the Download icon of the version"
+    full_path = os.path.join(c.DOWNLOAD_DIR, file_name)
+    size = os.path.getsize(full_path) if os.path.isfile(full_path) else 0
+    if size <= 0 or not file_name.lower().endswith(".pdf"):
+        return False, f"unexpected downloaded version file '{file_name}' ({size} bytes)"
+    return True, f"Version doc downloaded: {file_name} ({size} bytes)"
 
 
 SCENARIOS = [("Version download", version_download)]

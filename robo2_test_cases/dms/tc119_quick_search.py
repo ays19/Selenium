@@ -15,16 +15,17 @@ def quick_search(session: c.DmsSession) -> tuple[bool, str]:
     name = info["name"]
 
     found, count = session.explorer.quick_search_for(name, name)
-    if not found:
-        return False, f"Search by document name '{name}' did not show the document"
+    if not (found and count == 1):
+        return False, f"Search by document name '{name}' expected 1 result, got found={found}, count={count}"
     if not info["values"]:
-        return True, f"Search by document name shows the document ({count} result(s)). No text meta-data to search with"
+        raise c.SetupError(f"Doc type '{info['doc_type']}' has no text meta-data to test Quick Search by metadata")
 
     value = info["values"][0][1]
     found_meta, count_meta = session.explorer.quick_search_for(value, name)
-    return found_meta, (
-        f"Search by name shows the document ({count} result(s)). Search by meta-data '{value}' "
-        + (f"shows the document ({count_meta} result(s))" if found_meta else "does NOT show the document")
+    passed = found_meta and count_meta == 1
+    return passed, (
+        f"Search by name '{name}' shows 1 result. Search by meta-data '{value}' -> "
+        f"found={'yes' if found_meta else 'NO'} ({count_meta} result(s))"
     )
 
 

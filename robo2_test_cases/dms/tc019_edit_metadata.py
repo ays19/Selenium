@@ -13,7 +13,7 @@ TEST_CASE_ID = "DMS-TC019"
 
 
 def edit_metadata(session: c.DmsSession) -> tuple[bool, str]:
-    session.new_document(doc_type="1 FC Test updated/aa")
+    session.new_document()
     return session.document.edit_metadata_field_and_save()
 
 

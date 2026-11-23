@@ -19,7 +19,12 @@ TEST_CASE_ID = "DMS-TC042"
 def custom_text(session: c.DmsSession) -> tuple[bool, str]:
     session.upload.prepare_upload("pdf")
     text = datetime.now().strftime("AUTO_WM_%H%M%S")  # max 20 characters
-    return session.upload.create_text_watermark(text)
+    ok, message = session.upload.create_text_watermark(text)
+    if not ok:
+        return False, message
+    if not session.upload.is_watermark_in_library(text):
+        return False, f"Created watermark '{text}' did not appear in library ({message})"
+    return True, f"{message} ('{text}' verified in watermark library)"
 
 
 SCENARIOS = [("Custom text watermark", custom_text)]

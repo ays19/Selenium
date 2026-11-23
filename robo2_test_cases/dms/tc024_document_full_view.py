@@ -13,6 +13,12 @@ TEST_CASE_ID = "DMS-TC024"
 def full_view(session: c.DmsSession) -> tuple[bool, str]:
     session.new_document()
     url = session.document.open_full_view_tab()
+    low = (url or "").lower()
+    if not url or low.startswith("about:blank") or "/login" in low:
+        return False, f"unexpected full view tab URL: '{url}'"
+    body = session.document.body_text()
+    if any(err in body for err in ("404 not found", "page not found", "server error (500)", "403 forbidden")):
+        return False, f"full view tab returned an error page at '{url}'"
     return True, f"Document opened in a new tab ({url})"
 
 

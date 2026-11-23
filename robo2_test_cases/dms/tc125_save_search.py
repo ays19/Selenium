@@ -19,7 +19,10 @@ def saving(session: c.DmsSession) -> tuple[bool, str]:
     info = session.upload_document()
     search_name = datetime.now().strftime("AUTO_SEARCH_%H%M%S")
     ok, message = session.explorer.save_search(search_name, info)
-    return ok, f"{message} ({search_name})"
+    if not ok:
+        return False, f"{message} ({search_name})"
+    listed = session.explorer.is_saved_search_listed(search_name)
+    return listed, f"{message} ({search_name}, listed in Saved Search List={'yes' if listed else 'NO'})"
 
 
 SCENARIOS = [("Save search", saving)]

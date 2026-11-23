@@ -20,11 +20,15 @@ TEST_CASE_ID = "DMS-TC127"
 
 def maker_checker(session: c.DmsSession) -> tuple[bool, str]:
     doc_type = os.getenv("CHECKER_DOC_TYPE", "").strip()
+    checker_name = os.getenv("CHECKER_NAME", "").strip() or None
 
     def _maker_uploads():
-        info = session.upload_document("pdf", doc_type=doc_type, require_checker=True)
-        hidden = not session.explorer.search_finds(info["name"], tries=2)
-        return info, hidden
+        info = session.upload_document(
+            "pdf", doc_type=doc_type, require_checker=True, checker_name=checker_name
+        )
+        hidden_search = not session.explorer.search_finds(info["name"], tries=2)
+        hidden_explorer = not session.explorer.explorer_has(info["doc_type"], info["name"])
+        return info, (hidden_search and hidden_explorer)
 
     info, hidden_before = session.as_other_user(_maker_uploads)
     name = info["name"]
@@ -32,15 +36,17 @@ def maker_checker(session: c.DmsSession) -> tuple[bool, str]:
     ok, message = session.review.review_document(name, "approve")
     if not ok:
         return False, (
-            f"Checker could not approve the document ({message}). Doc type used: '{info['doc_type']}'. "
-            f"Document hidden from search before approval: {'yes' if hidden_before else 'NO (it did not go to review)'}"
+            f"Checker could not approve '{name}' ({message}). Doc type: '{info['doc_type']}'. "
+            f"Hidden before approval: {'yes' if hidden_before else 'NO'}"
         )
 
-    found_after = session.explorer.search_finds(name, tries=5)
-    ok = hidden_before and found_after
+    found_search = session.explorer.search_finds(name, tries=5)
+    found_explorer = session.explorer.explorer_has(info["doc_type"], name)
+    ok = hidden_before and found_search and found_explorer
     return ok, (
-        f"Before approval the document is hidden in search: {'yes' if hidden_before else 'NO'}. "
-        f"Checker approved it ({message}). After approval it is found in search: {'yes' if found_after else 'NO'}"
+        f"Before approval hidden in search & Explorer: {'yes' if hidden_before else 'NO'}. "
+        f"Checker approved ({message}). After approval Quick Search={'yes' if found_search else 'NO'}, "
+        f"Explorer={'yes' if found_explorer else 'NO'}"
     )
 
 

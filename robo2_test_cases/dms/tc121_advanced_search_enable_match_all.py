@@ -16,17 +16,29 @@ TEST_CASE_ID = "DMS-TC121"
 def advanced(session: c.DmsSession) -> tuple[bool, str]:
     first = session.upload_document("pdf")
     second = session.upload_document("pdf")
-    name, pairs = session.explorer.build_cross_search_criteria(first, second)
+    if len(first["values"]) < 2 or len(second["values"]) < 2:
+        raise c.SetupError(f"Doc type '{first['doc_type']}' needs >= 2 text metadata fields (got {first['values']})")
 
+    pos_name = session.explorer.build_cross_search_criteria(first, first)
     session.explorer.open()
-    session.explorer.advanced_search(name, match_all=True, doc_type=first["doc_type"], extra=pairs)
-    text = session.explorer.body_text()
-    found_a = first["name"].lower() in text
-    found_b = second["name"].lower() in text
-    ok = not found_a and not found_b
+    session.explorer.advanced_search(
+        None, match_all=True, doc_type=first["doc_type"], extra=first["values"][:2]
+    )
+    pos_hits = session.explorer.find_in_search_result_pages([first["name"], second["name"]])
+    pos_ok = first["name"] in pos_hits and second["name"] not in pos_hits
+
+    _, neg_pairs = session.explorer.build_cross_search_criteria(first, second)
+    session.explorer.open()
+    session.explorer.advanced_search(
+        None, match_all=True, doc_type=first["doc_type"], extra=neg_pairs
+    )
+    neg_hits = session.explorer.find_in_search_result_pages([first["name"], second["name"]])
+    neg_ok = not neg_hits
+
+    ok = pos_ok and neg_ok
     return ok, (
-        f"Match All on: first document {'shown' if found_a else 'not shown'}, "
-        f"second document {'shown' if found_b else 'not shown'} (expected neither document)"
+        f"Match All positive ({first['name']} only): {list(pos_hits)}. "
+        f"Match All negative cross-values (none expected): {list(neg_hits)}"
     )
 
 

@@ -5,6 +5,7 @@ from datetime import datetime
 import os
 import re
 import time
+import zipfile
 
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver import ActionChains
@@ -40,19 +41,31 @@ class ExplorerPage(BasePage):
     CHILDREN_XPATH = "./ul/li/a[contains(@class,'jstree-anchor')]"
 
     DATE_PATTERN = re.compile(
-        r"\d{4}-\d{2}-\d{2}|\d{1,2}[-/ ][A-Za-z]{3}[-/ ,]+\d{4}|\d{1,2}/\d{1,2}/\d{4}"
+        r"\d{4}-\d{2}-\d{2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?|"
+        r"[A-Za-z]{3}\s+\d{1,2},\s+\d{4}(?:,\s+\d{1,2}:\d{2}\s*[APap][Mm])?|"
+        r"\d{1,2}[-/ ][A-Za-z]{3}[-/ ,]+\d{4}|\d{1,2}/\d{1,2}/\d{4}"
     )
     DATE_FORMATS = (
-        "%Y-%m-%d", "%d-%b-%Y", "%d %b %Y", "%d/%m/%Y", "%d-%b, %Y", "%d %b, %Y", "%b %d, %Y",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%b %d, %Y, %I:%M %p",
+        "%b %d, %Y",
+        "%d-%b-%Y %H:%M:%S",
+        "%d-%b-%Y",
+        "%d %b %Y",
+        "%d/%m/%Y",
+        "%d-%b, %Y",
+        "%d %b, %Y",
     )
 
     def open(self) -> None:
         self.driver.get(cfg.EXPLORER_URL)
         self.wait_for_page_load()
 
-    # ------------------------------------------------------------------
+    
     # Quick Search & Opening Documents
-    # ------------------------------------------------------------------
+    
 
     def quick_search_for(self, query: str, expected: str, tries: int = 5) -> tuple[bool, int]:
         """Search in the global quick-search box and return (found, result_count)."""
@@ -115,9 +128,9 @@ class ExplorerPage(BasePage):
         self.switch_to_new_tab(old_tabs)
         self.wait_for_page_load()
 
-    # ------------------------------------------------------------------
+
     # Advanced Search
-    # ------------------------------------------------------------------
+    
 
     def _find_search_meta_field(self, label_text: str):
         field = self.find_field(label_text)
@@ -235,7 +248,45 @@ class ExplorerPage(BasePage):
     def advanced_finds(self, name: str, **options) -> bool:
         self.driver.get(cfg.EXPLORER_URL)
         self.advanced_search(name, **options)
-        return name.lower() in self.body_text()
+        return bool(self.find_in_search_result_pages([name], max_pages=10))
+
+    def advanced_search_result_names(self, max_pages: int = 10) -> list[str]:
+        """Collect ordered filenames from `#search_modal tbody tr` across pages."""
+        names: list[str] = []
+        seen_pages: set[str] = set()
+        for page in range(1, max_pages + 1):
+            rows_js = self.driver.execute_script(
+                "return Array.from(document.querySelectorAll('#search_modal tbody tr')).map(r => {"
+                "  var tds = r.querySelectorAll('td');"
+                "  return tds.length >= 3 ? tds[2].innerText.trim() : r.innerText.trim();"
+                "});"
+            ) or []
+            sig = "|".join(rows_js)
+            if not rows_js or sig in seen_pages:
+                break
+            seen_pages.add(sig)
+            names.extend(rows_js)
+            if page >= max_pages:
+                break
+            next_links = self.driver.find_elements(By.CSS_SELECTOR, self.SEARCH_NEXT_PAGE)
+            if not next_links or not next_links[0].is_displayed():
+                break
+            self.click(next_links[0])
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    lambda _d: not self.visible("#search_modal .loader")
+                    and "|".join(
+                        self.driver.execute_script(
+                            "return Array.from(document.querySelectorAll('#search_modal tbody tr')).map(r => {"
+                            "  var tds = r.querySelectorAll('td');"
+                            "  return tds.length >= 3 ? tds[2].innerText.trim() : r.innerText.trim();"
+                            "});"
+                        ) or []
+                    ) != sig
+                )
+            except TimeoutException:
+                break
+        return names
 
     def open_from_advanced_search(self, name: str) -> None:
         old_tabs = list(self.driver.window_handles)
@@ -318,6 +369,14 @@ class ExplorerPage(BasePage):
             self.driver.execute_script("arguments[0].click();", box)
 
     def download_multiple_from_advanced_search(self, doc_type: str) -> tuple[bool, str]:
+        self.driver.get(cfg.REQUESTED_DOWNLOAD_URL)
+        self.wait_for_page_load()
+        self.wait_for_ajax_idle(timeout=5)
+        existing_hrefs = {
+            a.get_attribute("href")
+            for a in self.driver.find_elements(By.CSS_SELECTOR, "#requested_downloads tbody a[href]")
+        }
+
         self.driver.get(cfg.EXPLORER_URL)
         self.advanced_search("", doc_type=doc_type)
 
@@ -329,19 +388,44 @@ class ExplorerPage(BasePage):
         for box in boxes[:2]:
             self._tick_checkbox(box)
 
-        self.click_label("download")
-        if not self.wait_text("requested download", 15):
-            return False, "no 'Requested Download' URL was generated"
+        ok_toast, toast_msg = self.message_after(lambda: self.click_label("download"))
+        if not ok_toast or "requested download" not in toast_msg.lower():
+            return False, f"unexpected response when requesting bulk download: '{toast_msg}'"
 
         self.wait_for_ajax_idle(timeout=5)
         self.driver.get(cfg.REQUESTED_DOWNLOAD_URL)
         self.wait_for_page_load()
+
+        def _find_new_link(d):
+            self.wait_for_ajax_idle(timeout=2)
+            links = self.visible("#requested_downloads tbody a[href]")
+            for ln in links:
+                if ln.get_attribute("href") not in existing_hrefs:
+                    return ln
+            return links[0] if links and not existing_hrefs else None
+
+        try:
+            dl_link = WebDriverWait(self.driver, 25, poll_frequency=2).until(_find_new_link)
+        except TimeoutException:
+            return False, "no new download link appeared on Requested Downloads page"
+
         before = set(os.listdir(cfg.DOWNLOAD_DIR))
-        self.click_label("download")
-        file_name = self.wait_for_download(before)
-        if file_name and file_name.lower().endswith(".zip"):
-            return True, f"Download URL generated in Requested Download, zip file downloaded: {file_name}"
-        return False, f"zip file was not downloaded (got: {file_name})"
+        started = time.time()
+        self.click(dl_link)
+        file_name = self.wait_for_download(before, started=started)
+        if not file_name or not file_name.lower().endswith(".zip"):
+            return False, f"zip file was not downloaded (got: {file_name})"
+
+        zip_path = os.path.join(str(cfg.DOWNLOAD_DIR), file_name)
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                bad = zf.testzip()
+                entries = zf.namelist()
+        except zipfile.BadZipFile as exc:
+            return False, f"downloaded file '{file_name}' is not a valid zip archive: {exc}"
+        if bad is not None or len(entries) < 2:
+            return False, f"zip '{file_name}' invalid or incomplete (bad={bad}, entries={entries})"
+        return True, f"Requested Download generated ({toast_msg}); zip '{file_name}' verified with {len(entries)} files"
 
     def search_meta_values(self) -> list[str]:
         inputs = self.driver.find_elements(
@@ -416,6 +500,10 @@ class ExplorerPage(BasePage):
 
         return self.message_after(_action)
 
+    def is_saved_search_listed(self, search_name: str) -> bool:
+        rows = self.open_saved_search_list()
+        return any(search_name.lower() in (r.text or "").lower() for r in rows)
+
     def load_saved_search_and_verify(self, search_name: str, info: dict) -> tuple[bool, str]:
         self.open_saved_search_list()
         self.wait_for_ajax_idle(timeout=5)
@@ -435,7 +523,14 @@ class ExplorerPage(BasePage):
             filled_ok, filled_msg = (filled == expected), f"document name field has '{filled}' (expected '{expected}')"
 
         self.click(self.driver.find_element(By.ID, "search_btn"))
-        shown = self.wait_text(info["name"], 10)
+        try:
+            WebDriverWait(self.driver, 15).until(
+                lambda _d: self.visible(self.SEARCH_MODAL) and not self.visible("#search_modal .loader")
+            )
+        except TimeoutException:
+            pass
+        self.wait_for_ajax_idle(timeout=5)
+        shown = bool(self.find_in_search_result_pages([info["name"]], max_pages=10))
         search_msg = "Search shows the document" if shown else "Search does NOT show the document"
         return filled_ok and shown, f"Saved search '{search_name}' listed, double click: {filled_msg}; {search_msg}"
 
@@ -466,72 +561,8 @@ class ExplorerPage(BasePage):
                 continue
         return None
 
-    def explorer_has(self, doc_type: str, name: str) -> bool:
-        """Expand jsTree in Explorer, click `doc_type`, and verify `name` is listed."""
-        self.driver.get(cfg.EXPLORER_URL)
-        self.wait_for_ajax_idle(timeout=6)
-        leaf = doc_type.strip("/").split("/")[-1]
-
-        try:
-            self.driver.execute_script("""
-                if (window.$ && $.jstree) {
-                    $('.jstree').each(function() {
-                        var tree = $(this).jstree(true);
-                        if (tree && tree.open_all) tree.open_all();
-                    });
-                }
-            """)
-            self.wait_for_ajax_idle(timeout=5)
-        except Exception:
-            pass
-
-        for _ in range(3):
-            try:
-                anchors = self.driver.find_elements(
-                    By.XPATH, f"//a[contains(@class, 'jstree-anchor') and normalize-space(.)={self.xpath_text(leaf)}]"
-                ) or self.driver.find_elements(
-                    By.XPATH, f"//a[contains(@class, 'jstree-anchor') and contains(normalize-space(.), {self.xpath_text(leaf)} )]"
-                )
-                if anchors:
-                    self.click(anchors[0])
-                    try:
-                        ActionChains(self.driver).double_click(anchors[0]).perform()
-                    except Exception:
-                        pass
-                else:
-                    self.click_label(leaf)
-                break
-            except StaleElementReferenceException:
-                time.sleep(0.5)
-            except Exception:
-                return False
-
-        self.wait_for_ajax_idle(timeout=6)
-        if self.wait_text(name, 5):
-            return True
-
-        table_filters = self.visible("input[type='search'], .dataTables_filter input")
-        if table_filters:
-            table_filters[0].clear()
-            table_filters[0].send_keys(name)
-            self.wait_for_ajax_idle(timeout=5)
-            if self.wait_text(name, 4):
-                return True
-
-        for _ in range(5):
-            next_btns = [
-                b for b in self.visible(".pagination li:not(.disabled) a.next, .paginate_button.next:not(.disabled), #pagination button.next")
-                if b.is_enabled()
-            ]
-            if not next_btns:
-                break
-            self.click(next_btns[0])
-            self.wait_for_ajax_idle(timeout=5)
-            if self.wait_text(name, 3):
-                return True
-        return False
-
-    def open_doc_type_tree(self, path: str) -> None:
+    def _navigate_tree_node(self, path: str) -> bool:
+        """Select `path` in Explorer jsTree; return True if documents loaded, False if empty."""
         parts = [p.strip() for p in path.strip().strip("/").split("/") if p.strip()]
         self.driver.get(cfg.EXPLORER_URL)
         tree = self.wait.until(EC.presence_of_element_located((By.ID, self.TREE_ID)))
@@ -568,11 +599,106 @@ class ExplorerPage(BasePage):
             f"var t = $('#{self.TREE_ID}').jstree(true); t.deselect_all(); t.select_node(arguments[0]);",
             leaf_id,
         )
-        try:
-            WebDriverWait(self.driver, 20).until(lambda _d: self.visible(self.DOCUMENTS_CSS))
-        except TimeoutException as exc:
-            raise SetupError(f"'{path}' shows no documents, use a doc-type that has documents") from exc
+        WebDriverWait(self.driver, 20).until(
+            lambda _d: bool(self.visible(self.DOCUMENTS_CSS))
+            or bool(self.visible("#main-window .no_cat_doc_selected_div"))
+        )
         self.wait_for_ajax_idle(timeout=6)
+        return not bool(self.visible("#main-window .no_cat_doc_selected_div"))
+
+    def _filter_explorer_by_name(self, doc_name: str) -> None:
+        search_btns = self.visible("#search_doc_explorer")
+        if search_btns and not self.visible("#docname_explorer"):
+            self.click(search_btns[0])
+            self.wait.until(EC.visibility_of_element_located((By.ID, "docname_explorer")))
+        box = self.wait.until(EC.visibility_of_element_located((By.ID, "docname_explorer")))
+        box.clear()
+        box.send_keys(doc_name)
+        self.driver.execute_script("$('#docname_explorer').trigger('change');")
+        try:
+            WebDriverWait(self.driver, 10, ignored_exceptions=(StaleElementReferenceException,)).until(
+                lambda d: any(doc_name.lower() in r.text.lower() for r in self.visible("#explorer_file_list_view tbody tr"))
+                or bool(self.visible("#main-window .no_cat_doc_selected_div"))
+            )
+        except TimeoutException:
+            pass
+        self.wait_for_ajax_idle(timeout=5)
+
+    def _find_explorer_row(self, doc_type: str, name: str):
+        has_docs = self._navigate_tree_node(doc_type)
+        if not has_docs:
+            return None
+        list_btns = self.visible("#list_view")
+        if list_btns and not self.visible(self.LIST_CSS):
+            self.click(list_btns[0])
+            self.wait.until(lambda _d: bool(self.visible(self.LIST_CSS)))
+        low = name.lower()
+        for _ in range(3):
+            try:
+                for tr in self.driver.find_elements(By.CSS_SELECTOR, f"{self.LIST_CSS} tbody tr"):
+                    if low in (tr.text or "").lower():
+                        return tr
+                break
+            except StaleElementReferenceException:
+                time.sleep(0.3)
+        self._filter_explorer_by_name(name)
+        for _ in range(3):
+            try:
+                for tr in self.driver.find_elements(By.CSS_SELECTOR, f"{self.LIST_CSS} tbody tr"):
+                    if low in (tr.text or "").lower():
+                        return tr
+                return None
+            except StaleElementReferenceException:
+                time.sleep(0.3)
+        return None
+
+    def explorer_has(self, doc_type: str, name: str) -> bool:
+        """Select `doc_type` in Explorer jsTree and verify `name` is listed in #explorer_file_list_view."""
+        return self._find_explorer_row(doc_type, name) is not None
+
+    def explorer_doc_icons(self, doc_type: str, name: str) -> dict[str, bool]:
+        """Inspect Locked/Shared status icons on `name` inside Explorer list view."""
+        row = self._find_explorer_row(doc_type, name)
+        if row is None:
+            return {"found": False, "locked": False, "shared": False}
+        locked = bool(row.find_elements(By.CSS_SELECTOR, "i.fa-lock-keyhole[title='Locked']"))
+        shared = bool(row.find_elements(By.CSS_SELECTOR, "i[title='Shared']"))
+        return {"found": True, "locked": locked, "shared": shared}
+
+    def explorer_content_search(self, doc_type: str, query: str, expected_name: str) -> tuple[bool, list[str]]:
+        """Open `doc_type` in Explorer, type `query` in `#content-search`, and verify matching documents."""
+        self._navigate_tree_node(doc_type)
+        search_btn = self.wait.until(EC.element_to_be_clickable((By.ID, "search_doc_explorer")))
+        self.click(search_btn)
+        box = self.wait.until(EC.visibility_of_element_located((By.ID, "content-search")))
+        box.clear()
+        box.send_keys(query)
+        self.driver.execute_script("$('#content-search').trigger('change');")
+
+        try:
+            WebDriverWait(self.driver, 15).until(
+                lambda _d: self.visible("#main-window .no_cat_doc_selected_div")
+                or bool(self.visible("#explorer_file_list_view tbody tr, #main-window .file-thumb"))
+            )
+        except TimeoutException:
+            pass
+        self.wait_for_ajax_idle(timeout=6)
+
+        if self.visible("#main-window .no_cat_doc_selected_div"):
+            return False, []
+        rows = [
+            " ".join(el.text.split())
+            for el in self.driver.find_elements(
+                By.CSS_SELECTOR, "#explorer_file_list_view tbody tr, #main-window .file-thumb .c-info"
+            )
+            if el.is_displayed()
+        ]
+        found = any(expected_name.lower() in r.lower() for r in rows)
+        return found, rows
+
+    def open_doc_type_tree(self, path: str) -> None:
+        if not self._navigate_tree_node(path):
+            raise SetupError(f"'{path}' shows no documents, use a doc-type that has documents")
 
     def choose_order(self, label: str) -> None:
         self.pick_bootstrap_select("order_by", label)
@@ -625,6 +751,8 @@ class ExplorerPage(BasePage):
             self.choose_order(order_label)
         self.wait.until(lambda _d: self.visible(self.LIST_CSS))
         rows, pages = self.read_pages(path)
+        if len(rows) < 2:
+            return False, f"expected at least 2 document rows across {pages} pages, found {len(rows)}"
         desc = label_desc or f"{by.title()} {'descending' if descending else 'ascending'}"
 
         if by == "name":
@@ -656,17 +784,81 @@ class ExplorerPage(BasePage):
         WebDriverWait(self.driver, 30).until(lambda _d: self._child_anchors(tree))
         self.wait_for_ajax_idle(timeout=5)
 
-        names = [self._anchor_name(a) for a in self._child_anchors(tree)]
-        if len(names) < 2:
-            return False, f"only {len(names)} category / doc-type names found on the page"
-
         def _sort_key(name: str) -> str:
             return re.sub(r"[^a-z0-9]", "", name.lower())
 
+        names = [self._anchor_name(a) for a in self._child_anchors(tree)]
+        if len(names) < 2:
+            return False, f"only {len(names)} category / doc-type names found on the page"
         for i in range(len(names) - 1):
             if _sort_key(names[i]) > _sort_key(names[i + 1]):
                 return False, f"NOT sorted by name ascending: '{names[i]}' is shown before '{names[i + 1]}'. {len(names)} names checked"
-        return True, f"{len(names)} categories / doc-types checked: sorted by name ascending"
+
+        # Also verify child sorting inside a folder node when available
+        child_checked = 0
+        for anchor in self._child_anchors(tree):
+            node = anchor.find_element(By.XPATH, "..")
+            if "jstree-leaf" in (node.get_attribute("class") or ""):
+                continue
+            node_id = node.get_attribute("id")
+            self.driver.execute_script(f"$('#{self.TREE_ID}').jstree('open_node', arguments[0]);", node_id)
+            try:
+                opened_node = WebDriverWait(self.driver, 8).until(
+                    lambda d, nid=node_id: n if self._child_anchors(n := d.find_element(By.ID, nid)) else False
+                )
+                child_names = [self._anchor_name(c) for c in self._child_anchors(opened_node)]
+                if len(child_names) >= 2:
+                    child_checked = len(child_names)
+                    for i in range(len(child_names) - 1):
+                        if _sort_key(child_names[i]) > _sort_key(child_names[i + 1]):
+                            return False, (
+                                f"Child nodes under '{self._anchor_name(anchor)}' NOT sorted ascending: "
+                                f"'{child_names[i]}' before '{child_names[i + 1]}'"
+                            )
+                    break
+            except TimeoutException:
+                continue
+
+        return True, (
+            f"{len(names)} root categories/doc-types and {child_checked} child items checked: sorted by name ascending"
+        )
+
+    def _verify_view_tab_and_quick_view(self, avatar_el, preview_el) -> tuple[bool, bool, str]:
+        main_tab = self.driver.current_window_handle
+        old_tabs = list(self.driver.window_handles)
+        self.click(avatar_el)
+        opened_ok = False
+        tab_url = ""
+        try:
+            WebDriverWait(self.driver, 8).until(lambda d: len(d.window_handles) > len(old_tabs))
+            self.driver.switch_to.window(self.driver.window_handles[-1])
+            self.wait_for_page_load()
+            tab_url = (self.driver.current_url or "").lower()
+            opened_ok = "/dms/document/view/" in tab_url and "/login" not in tab_url
+        except TimeoutException:
+            opened_ok = False
+        self.close_extra_tabs(main_tab)
+
+        self.click(preview_el)
+        self.wait_for_ajax_idle(timeout=6)
+        try:
+            quick_ok = WebDriverWait(self.driver, 10).until(
+                lambda d: any(
+                    m.is_displayed()
+                    and bool(
+                        m.find_elements(
+                            By.CSS_SELECTOR,
+                            "#file_container iframe[src], #file_container img[src], "
+                            "#file_container audio[src], #file_container video[src], "
+                            "#file_container object[data], .explorer-doc-preview table, #file_container p",
+                        )
+                    )
+                    for m in d.find_elements(By.CSS_SELECTOR, "#viewFiles, #explorer_excel_ViewModal")
+                )
+            )
+        except TimeoutException:
+            quick_ok = False
+        return opened_ok, bool(quick_ok), tab_url
 
     def test_grid_view(self, doc_type: str) -> tuple[bool, str]:
         self.open_doc_type_tree(doc_type)
@@ -676,27 +868,14 @@ class ExplorerPage(BasePage):
         if not cards or self.visible(self.LIST_CSS):
             return False, "documents are not shown in grid view after clicking the grid icon"
 
-        main_tab = self.driver.current_window_handle
-        old_tabs = list(self.driver.window_handles)
-        self.click(cards[0])
-        try:
-            WebDriverWait(self.driver, 6).until(lambda d: len(d.window_handles) > len(old_tabs))
-            opened_tab = True
-        except TimeoutException:
-            opened_tab = len(self.driver.window_handles) > len(old_tabs)
-        self.close_extra_tabs(main_tab)
-
         preview = self.visible("div.file-thumb a.quick_view")
         if not preview:
             return False, "Grid view shown, but the view (preview) icon was not found"
-        self.click(preview[0])
-        self.wait_for_ajax_idle(timeout=5)
-        quick_view = bool(self.visible(".modal.in, .modal.show"))
-
+        opened_tab, quick_view, tab_url = self._verify_view_tab_and_quick_view(cards[0], preview[0])
         ok = opened_tab and quick_view
         return ok, (
-            f"Grid view shown. Document opened in new tab: {'yes' if opened_tab else 'NO'}. "
-            f"Quick view modal opened: {'yes' if quick_view else 'NO'}"
+            f"Grid view shown. Document opened in new tab ({tab_url}): {'yes' if opened_tab else 'NO'}. "
+            f"Quick view modal opened with preview content: {'yes' if quick_view else 'NO'}"
         )
 
     def test_list_view(self, doc_type: str) -> tuple[bool, str]:
@@ -712,37 +891,32 @@ class ExplorerPage(BasePage):
         missing = [col for col in ("document name", "uploaded by") if col not in headers]
         if missing:
             return False, f"list view does not show the columns {missing} (found: {headers})"
-        if not self.page_rows():
-            return False, "the list view shows no document rows"
+        rows = self.page_rows()
+        if not rows or not rows[0][1].strip() or not rows[0][2].strip():
+            return False, f"list view first row is missing title/publisher cells ({rows[:1]})"
 
-        main_tab = self.driver.current_window_handle
-        old_tabs = list(self.driver.window_handles)
-        self.click(self.driver.find_elements(By.CSS_SELECTOR, f"{self.LIST_CSS} a.ci-avatar")[0])
-        try:
-            WebDriverWait(self.driver, 6).until(lambda d: len(d.window_handles) > len(old_tabs))
-            opened_tab = True
-        except TimeoutException:
-            opened_tab = len(self.driver.window_handles) > len(old_tabs)
-        self.close_extra_tabs(main_tab)
-
+        avatars = self.driver.find_elements(By.CSS_SELECTOR, f"{self.LIST_CSS} a.ci-avatar")
         preview = self.driver.find_elements(By.CSS_SELECTOR, f"{self.LIST_CSS} a.quick_view")
-        if not preview:
-            return False, "List view shown, but the view (preview) icon was not found"
-        self.click(preview[0])
-        self.wait_for_ajax_idle(timeout=5)
-        quick_view = bool(self.visible(".modal.in, .modal.show"))
+        if not avatars or not preview:
+            return False, "List view shown, but document open or preview icon was not found"
+        opened_tab, quick_view, tab_url = self._verify_view_tab_and_quick_view(avatars[0], preview[0])
 
         ok = opened_tab and quick_view
         return ok, (
-            f"List view shows Document Name and Uploaded By. Document opened in new tab: {'yes' if opened_tab else 'NO'}. "
-            f"Quick view modal opened: {'yes' if quick_view else 'NO'}"
+            f"List view shows Document Name ('{rows[0][1]}') and Uploaded By ('{rows[0][2]}'). "
+            f"Document opened in new tab ({tab_url}): {'yes' if opened_tab else 'NO'}. "
+            f"Quick view modal opened with preview content: {'yes' if quick_view else 'NO'}"
         )
 
-    def load_explorer_text(self) -> str:
+    def load_explorer_tree_names(self) -> list[str]:
         self.driver.get(cfg.EXPLORER_URL)
-        self.wait.until(EC.presence_of_element_located((By.ID, self.TREE_ID)))
+        tree = self.wait.until(EC.presence_of_element_located((By.ID, self.TREE_ID)))
+        WebDriverWait(self.driver, 30).until(lambda _d: self._child_anchors(tree))
         self.wait_for_ajax_idle(timeout=6)
-        return self.body_text()
+        return [self._anchor_name(a) for a in tree.find_elements(By.CSS_SELECTOR, "a.jstree-anchor")]
+
+    def load_explorer_text(self) -> str:
+        return "\n".join(self.load_explorer_tree_names()).lower()
 
     # ------------------------------------------------------------------
     # Restore Deleted Document (DMS-TC028)

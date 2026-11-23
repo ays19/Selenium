@@ -22,34 +22,46 @@ def merge_pdfs(session: c.DmsSession) -> tuple[bool, str]:
 
     pending_names = session.upload.attach_and_get_pending_names(paths)
     session.upload.select_pending_files(pending_names)
-    if session.upload.selected_count() < 2:
-        return False, f"only {session.upload.selected_count()} of 2 PDFs could be selected together"
+    if session.upload.selected_count() != 2:
+        return False, f"expected 2 selected PDFs, got {session.upload.selected_count()}"
 
     session.upload.fill_metadata_form()
     if session.upload.has_visible_checker():
-        session.upload.select_checker()
-    session.upload.set_document_name(datetime.now().strftime("AUTO_MERGE_%H%M%S"))
+        raise c.SetupError(
+            f"Doc type '{session.upload.current_doc_type()}' has Maker-Checker enabled; configure a non-checker DOC_TYPE"
+        )
+    merged_name = datetime.now().strftime("AUTO_MERGE_%H%M%S")
+    session.upload.set_document_name(merged_name)
 
     ok, message = session.upload.click_save_upload()
+    if not ok:
+        return False, message
+    if not session.explorer.search_finds(merged_name, tries=5):
+        return False, f"Merged upload showed '{message}' but '{merged_name}' was not found in Quick Search"
     names = " + ".join(os.path.basename(p) for p in paths)
-    return ok, f"{names} uploaded together: {message}"
+    return True, f"{names} uploaded together as '{merged_name}': {message} (found in Quick Search)"
 
 
 def images_not_merged(session: c.DmsSession) -> tuple[bool, str]:
     """Scenario 2: Two images must not be selectable together."""
-    paths = session.upload.pick_sample_files(["png", "jpg", "jpeg"], 2)
-    if not paths:
-        return False, "need 2 image files (png, jpg or jpeg) in test_files"
+    sample = session.upload.find_sample_file("png") or session.upload.find_sample_file("jpg") or session.upload.find_sample_file("jpeg")
+    if not sample:
+        return False, "need an image file (png, jpg or jpeg) in test_files"
 
-    pending_names = session.upload.attach_and_get_pending_names(paths)
-    session.upload.select_pending_files(pending_names)
+    pending_names = session.upload.attach_and_get_pending_names([sample[1], sample[1]])
+    session.upload.open_pending_list()
+    session.upload.clear_selected_files()
+    if not session.upload.click_pending_icon(pending_names[0]):
+        raise c.SetupError(f"could not select first image '{pending_names[0]}'")
+    session.upload.wait.until(lambda _d: session.upload.selected_count() == 1)
+
+    ok, said = session.upload.message_after(lambda: session.upload.click_pending_icon(pending_names[1]))
     count = session.upload.selected_count()
-    said = " ".join(session.upload.popup_text().split())
     session.upload.clear_selected_files()
 
-    if count < 2:
-        return True, f"only {count} image accepted. Page said: {said or 'nothing'}"
-    return False, "both images were accepted together, so they could be merged"
+    if not ok and count == 1:
+        return True, f"only 1 image accepted; page rejected 2nd image: {said}"
+    return False, f"expected rejection with 1 selected image; got ok={ok}, count={count}, message='{said}'"
 
 
 SCENARIOS = [

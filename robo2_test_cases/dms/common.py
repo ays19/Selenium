@@ -92,6 +92,7 @@ class DmsSession:
         doc_type: str | None = None,
         share: str | None = None,
         require_checker: bool = False,
+        checker_name: str | None = None,
     ) -> dict:
         with self.step(f"Upload test .{ext} document"):
             return self.upload.upload_document(
@@ -99,10 +100,10 @@ class DmsSession:
                 doc_type=doc_type,
                 share=share,
                 require_checker=require_checker,
-                approve_fn=self.review.review_document,
+                checker_name=checker_name,
             )
 
-    def new_document(self, ext: str = "pdf", doc_type: str = "1 FC Test updated/aa") -> dict:
+    def new_document(self, ext: str = "pdf", doc_type: str | None = None) -> dict:
         """Upload a fresh test document and open it in Document View."""
         info = self.upload_document(ext=ext, doc_type=doc_type)
         with self.step(f"Open document '{info['name']}' in Document View"):
@@ -479,7 +480,7 @@ def run_dms_test(
             results.append((label, ok, msg))
             row_entries.append(("Pass" if ok else "Fail", msg, shot_file))
 
-        if all(ok for _, ok, _ in results):
+        if results and all(ok for _, ok, _ in results):
             status = "passed"
             excel_status = "Pass"
         else:
@@ -515,6 +516,10 @@ def run_dms_test(
                 attach_failure_diagnostics(driver, test_case_id, "setup", traceback.format_exc(), reporter)
             except Exception:
                 pass
+        if multi_row:
+            fallback_shot = failed_shots[-1] if failed_shots else None
+            while len(row_entries) < len(scenarios):
+                row_entries.append(("Fail", actual, fallback_shot))
 
     except Exception as exc:
         error = exc
@@ -528,13 +533,22 @@ def run_dms_test(
                 attach_failure_diagnostics(driver, test_case_id, "error", traceback.format_exc(), reporter)
             except Exception:
                 pass
+        if multi_row:
+            fallback_shot = failed_shots[-1] if failed_shots else None
+            while len(row_entries) < len(scenarios):
+                row_entries.append(("Fail", actual, fallback_shot))
 
     finally:
         if session is not None:
-            try:
-                session.categorization.cleanup_created_items()
-            except Exception:
-                pass
+            for cleanup_name, cleanup_fn in (
+                ("categorization", session.categorization.cleanup_created_items),
+                ("master_table", session.master_table.cleanup_created_methods),
+                ("watermark", session.upload.cleanup_created_watermarks),
+            ):
+                try:
+                    cleanup_fn()
+                except Exception as cleanup_exc:
+                    print(f"   [Warning] {cleanup_name} cleanup failed: {cleanup_exc}")
         if driver:
             try:
                 driver.quit()

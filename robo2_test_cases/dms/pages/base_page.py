@@ -6,6 +6,8 @@ import re
 import time
 
 from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    ElementNotInteractableException,
     NoAlertPresentException,
     NoSuchElementException,
     StaleElementReferenceException,
@@ -67,9 +69,8 @@ class BasePage:
         self.driver = driver
         self.wait = wait
 
-    # ------------------------------------------------------------------
     # Text & Page Wait Helpers
-    # ------------------------------------------------------------------
+    
 
     @staticmethod
     def xpath_text(text: str) -> str:
@@ -129,15 +130,15 @@ class BasePage:
         except TimeoutException:
             return False
 
-    # ------------------------------------------------------------------
+   
     # Click & Label Lookup
-    # ------------------------------------------------------------------
+    
 
     def click(self, element) -> None:
         self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
         try:
             element.click()
-        except Exception:
+        except (ElementClickInterceptedException, ElementNotInteractableException):
             self.driver.execute_script("arguments[0].click();", element)
 
     def predicate(self, label: str, exact: bool) -> str:
@@ -278,9 +279,9 @@ class BasePage:
 
         self._retry_lookup(lambda _d: self.find_by_label(label), _act)
 
-    # ------------------------------------------------------------------
+    
     # Popups, Notifications & Modals
-    # ------------------------------------------------------------------
+    
 
     def popup_text(self) -> str:
         boxes = []
@@ -294,23 +295,63 @@ class BasePage:
                 continue
         return " | ".join(boxes)
 
-    def wait_for_message(self, text_before: str, seconds: int = 20) -> tuple[bool, str]:
+    @classmethod
+    def _classify_message(cls, text: str, is_danger: bool = False, is_success_cls: bool = False) -> tuple[bool, str] | None:
+        low = text.lower()
+        for word in cls.ERROR_WORDS:
+            if word in low:
+                return False, text
+        if re.search(r"\bsuccess", low):
+            return True, text
+        if is_danger:
+            return False, text
+        if is_success_cls:
+            return True, text
+        for word in cls.SUCCESS_WORDS:
+            if word in low:
+                return True, text
+        return None
+
+    def _visible_message_boxes(self, d=None) -> list[tuple[bool, bool, str]]:
+        drv = d or self.driver
+        boxes = []
+        for elem in drv.find_elements(By.CSS_SELECTOR, self.MESSAGE_BOX):
+            try:
+                if elem.is_displayed():
+                    txt = elem.text.strip()
+                    if txt:
+                        cls = (elem.get_attribute("class") or "").lower()
+                        is_danger = any(
+                            c in cls for c in ("alert-danger", "toast-error", "has-error", "alert-warning", "toast-warning")
+                        ) or any(
+                            ic.is_displayed() for ic in elem.find_elements(By.CSS_SELECTOR, ".swal2-error, .swal2-warning")
+                        )
+                        is_success_cls = any(
+                            c in cls for c in ("alert-success", "toast-success", "has-success")
+                        ) or any(
+                            ic.is_displayed() for ic in elem.find_elements(By.CSS_SELECTOR, ".swal2-success")
+                        )
+                        boxes.append((is_danger, is_success_cls, txt))
+            except StaleElementReferenceException:
+                continue
+        return boxes
+
+    def wait_for_message(
+        self,
+        text_before: str = "",
+        seconds: int = 20,
+        boxes_before: set[str] | None = None,
+    ) -> tuple[bool, str]:
+        seen_before = boxes_before or set()
+
         def _new_message(d):
-            boxes = []
-            for elem in d.find_elements(By.CSS_SELECTOR, self.MESSAGE_BOX):
-                try:
-                    if elem.is_displayed():
-                        txt = elem.text.strip()
-                        if txt:
-                            cls = (elem.get_attribute("class") or "").lower()
-                            is_danger = any(
-                                c in cls for c in ("alert-danger", "toast-error", "has-error")
-                            ) or any(
-                                ic.is_displayed() for ic in elem.find_elements(By.CSS_SELECTOR, ".swal2-error")
-                            )
-                            boxes.append((is_danger, txt))
-                except StaleElementReferenceException:
+            for is_danger, is_success_cls, txt in self._visible_message_boxes(d):
+                if txt in seen_before:
                     continue
+                classified = self._classify_message(txt, is_danger=is_danger, is_success_cls=is_success_cls)
+                if classified is not None:
+                    return classified
+
             try:
                 saved = d.execute_script("return sessionStorage.getItem('__last_notify_msg') || '';")
                 saved_type = (
@@ -319,37 +360,12 @@ class BasePage:
             except Exception:
                 saved, saved_type = "", ""
 
-            for is_danger, txt in boxes:
-                low = txt.lower()
-                for word in self.ERROR_WORDS:
-                    if word in low and word not in text_before:
-                        return False, txt
-                if re.search(r"\bsuccess", low) and ("success" not in text_before or low not in text_before):
-                    return True, txt
-                if is_danger and low not in text_before:
-                    return False, txt
-                for word in self.SUCCESS_WORDS:
-                    if word in low and word not in text_before:
-                        return True, txt
-
             if saved:
-                low = saved.lower()
-                if any(word in low for word in self.ERROR_WORDS):
-                    return False, saved
-                if re.search(r"\bsuccess", low):
-                    return True, saved
-                if saved_type in ("danger", "error"):
-                    return False, saved
-                if saved_type == "success" or any(word in low for word in self.SUCCESS_WORDS):
-                    return True, saved
-
-            body = self.body_text()
-            for word in self.ERROR_WORDS:
-                if word in body and word not in text_before:
-                    return False, word
-            for word in self.SUCCESS_WORDS:
-                if word in body and word not in text_before:
-                    return True, word
+                is_danger = saved_type in ("danger", "error", "warning")
+                is_success_cls = saved_type == "success"
+                classified = self._classify_message(saved, is_danger=is_danger, is_success_cls=is_success_cls)
+                if classified is not None:
+                    return classified
             return None
 
         ok, msg = WebDriverWait(
@@ -390,9 +406,9 @@ class BasePage:
             """)
         except Exception:
             pass
-        text_before = self.body_text()
+        boxes_before = {txt for _, _, txt in self._visible_message_boxes()}
         action()
-        ok, message = self.wait_for_message(text_before, seconds=seconds)
+        ok, message = self.wait_for_message("", seconds=seconds, boxes_before=boxes_before)
         message = re.sub(r"<[^>]+>", " ", message)
         message = re.sub(r"^[×x]?\s*close\s*", "", " ".join(message.split()), flags=re.I)
         return ok, message
@@ -400,13 +416,17 @@ class BasePage:
     def confirm(self, label: str = "yes", seconds: int = 15) -> bool:
         """Click the confirmation button in a SweetAlert or Bootstrap modal."""
         def _shown_button(d):
+            has_swal_error = any(
+                e.is_displayed() for e in d.find_elements(By.CSS_SELECTOR, ".swal2-error")
+            )
             for btn in d.find_elements(
                 By.CSS_SELECTOR, ".swal2-confirm, .swal2-modal button, .modal.in button, .modal.show button"
             ):
                 try:
-                    if btn.is_displayed() and (
-                        label in btn.text.lower() or "swal2-confirm" in (btn.get_attribute("class") or "")
-                    ):
+                    if not btn.is_displayed():
+                        continue
+                    cls = btn.get_attribute("class") or ""
+                    if label in btn.text.lower() or ("swal2-confirm" in cls and not has_swal_error):
                         return btn
                 except StaleElementReferenceException:
                     continue
@@ -445,16 +465,16 @@ class BasePage:
     def do(self, label: str, confirm_label: str | None = None) -> tuple[bool, str]:
         def _action():
             self.click_label(label)
-            if confirm_label:
-                self.confirm(confirm_label)
+            if confirm_label and not self.confirm(confirm_label):
+                raise AssertionError(f"Confirmation button '{confirm_label}' did not appear after clicking '{label}'")
 
         return self.message_after(_action)
 
     def do_near(self, anchor_text: str, label: str, confirm_label: str | None = None, root=None) -> tuple[bool, str]:
         def _action():
             self.click_near(anchor_text, label, root=root)
-            if confirm_label:
-                self.confirm(confirm_label)
+            if confirm_label and not self.confirm(confirm_label):
+                raise AssertionError(f"Confirmation button '{confirm_label}' did not appear after clicking '{label}'")
 
         return self.message_after(_action)
 
@@ -469,9 +489,9 @@ class BasePage:
                 pass
         return (text or "").strip()
 
-    # ------------------------------------------------------------------
+    
     # Forms, Select2, Bootstrap-Select & Downloads
-    # ------------------------------------------------------------------
+    
 
     def find_field(self, label_text: str):
         wanted = label_text.lower()
@@ -511,7 +531,10 @@ class BasePage:
             lambda _d: [o for o in self.visible(menu_css) if o.text.strip()]
         )
         if option_text:
-            options = [o for o in options if option_text.lower() in o.text.lower()] or options
+            matched = [o for o in options if option_text.lower() in o.text.lower()]
+            if not matched:
+                raise LookupError(f"No option matching '{option_text}' in '{label_text}'")
+            options = matched
         text = options[0].text
         self.click(options[0])
         return text
@@ -557,7 +580,12 @@ class BasePage:
             title = (opt.get_attribute("title") or opt.text or "").strip().strip("/").lower()
             if title == leaf or title.split("/")[-1] == leaf:
                 return i
-        return 0
+        for i, opt in enumerate(options):
+            title = (opt.get_attribute("title") or opt.text or "").strip().strip("/").lower()
+            if leaf and leaf in title:
+                return i
+        available = [(o.get_attribute("title") or o.text or "").strip() for o in options[:5]]
+        raise LookupError(f"No dropdown option matching '{term}' (available: {available})")
 
     def pick_select2_by_id(self, select_id: str, term: str) -> None:
         box = self.wait.until(
@@ -566,11 +594,14 @@ class BasePage:
             )
         )
         self.click(box)
-        self.wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "input.select2-search__field")))
+        search_input = self.wait.until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, ".select2-container--open input.select2-search__field"))
+        )
         wanted = term.strip().strip("/").split("/")[-1]
-        for letter in wanted[:5]:
-            ActionChains(self.driver).send_keys(letter).perform()
-            time.sleep(0.15)
+        search_input.clear()
+        for letter in wanted[:30]:
+            search_input.send_keys(letter)
+            time.sleep(0.1)
 
         option_css = f"#select2-{select_id}-results .select2-results__option"
         WebDriverWait(self.driver, 10).until(lambda _d: bool(self.select2_options(option_css)))
@@ -592,6 +623,8 @@ class BasePage:
                 break
             except (StaleElementReferenceException, IndexError):
                 time.sleep(0.5)
+            except LookupError as exc:
+                raise SetupError(f"the value '{wanted}' was not found in the '{select_id}' drop-down: {exc}") from exc
 
         try:
             WebDriverWait(self.driver, 3).until(lambda _d: _chosen())
@@ -626,9 +659,9 @@ class BasePage:
         boxes = self.visible(".parsley-errors-list li, .parsley-custom-error-message, .validation-error-message")
         return " | ".join(box.text.strip() for box in boxes if box.text.strip())
 
-    # ------------------------------------------------------------------
+    
     # Tabs & Downloads
-    # ------------------------------------------------------------------
+    
 
     def switch_to_new_tab(self, old_tabs: list[str]) -> bool:
         if len(self.driver.window_handles) > len(old_tabs):
@@ -646,7 +679,7 @@ class BasePage:
     def wait_for_download(
         self, before: set[str], seconds: int = 30, started: float | None = None
     ) -> str | None:
-        """Wait for a finished file in cfg.DOWNLOAD_DIR (new, or overwritten since `started`)."""
+        """Wait for a finished non-empty file in cfg.DOWNLOAD_DIR (new, or overwritten since `started`)."""
         download_dir = str(cfg.DOWNLOAD_DIR)
 
         def _ready(_d):
@@ -655,10 +688,17 @@ class BasePage:
                 if name.endswith((".crdownload", ".tmp")):
                     continue
                 path = os.path.join(download_dir, name)
-                if name not in before or (started is not None and os.path.getmtime(path) >= started - 1):
-                    found.append((os.path.getmtime(path), name))
+                if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+                    continue
+                mtime = os.path.getmtime(path)
+                if name not in before or (started is not None and mtime >= started - 1):
+                    found.append((mtime, name, path))
             if found:
-                return max(found)[1]
+                _, name, path = max(found)
+                size1 = os.path.getsize(path)
+                time.sleep(0.2)
+                if os.path.isfile(path) and os.path.getsize(path) == size1 and size1 > 0:
+                    return name
             return False
 
         try:

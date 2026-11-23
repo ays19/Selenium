@@ -17,11 +17,8 @@ def notify_on(session: c.DmsSession) -> tuple[bool, str]:
     name = session.categorization.new_doc_type()
     ok, message = session.categorization.toggle_notify(name, "on")
     is_on = session.categorization.is_notify_on(name)
-    passed = is_on and ok is not False
-    return passed, (
-        f"{message} ({name}). Notify is {'on' if is_on else 'OFF'}. "
-        "The notification to the owner group members is not checked by the script"
-    )
+    passed = bool(ok) and is_on
+    return passed, f"{message} ({name}). Notify is {'on' if is_on else 'OFF'}"
 
 
 SCENARIOS = [("Notify on", notify_on)]

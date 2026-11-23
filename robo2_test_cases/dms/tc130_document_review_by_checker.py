@@ -18,18 +18,57 @@ TEST_CASE_ID = "DMS-TC130"
 
 def checker_list(session: c.DmsSession) -> tuple[bool, str]:
     doc_type = os.getenv("CHECKER_DOC_TYPE", "").strip()
-    info = session.upload_document("pdf", doc_type=doc_type, require_checker=True)
+    checker_name = os.getenv("CHECKER_NAME", "").strip() or os.getenv("DMS_USERNAME", "")
+    info = session.upload_document("pdf", doc_type=doc_type, require_checker=True, checker_name=checker_name)
     name = info["name"]
+    maker_filter_term = os.getenv("CHECKER_NAME", "").strip() or os.getenv("DMS_USERNAME", "")
 
-    shown, approve, reject = session.as_other_user(
-        lambda: session.review.has_checker_actions(name)
+    def _verify_checker_view():
+        val, default_label = session.review.default_user_filter()
+        default_is_others = (val == "1") and ("others" in default_label.lower())
+        shown, approve, reject = session.review.has_checker_actions(name)
+
+        session.review.search_table("")
+        session.review.select_maker_filter(maker_filter_term)
+        maker_hit = session.review.table_contains(name)
+
+        today = session.review.today_ymd()
+        session.review.apply_date_range("maker-date", today, today)
+        today_hit = session.review.table_contains(name)
+        session.review.apply_date_range("maker-date", "2020-01-01", "2020-01-02")
+        past_miss = not session.review.table_contains(name, timeout=4)
+        session.review.clear_date_range("maker-date")
+
+        return {
+            "default_is_others": default_is_others,
+            "default_label": default_label,
+            "shown": shown,
+            "approve": approve,
+            "reject": reject,
+            "maker_hit": maker_hit,
+            "date_ok": today_hit and past_miss,
+        }
+
+    try:
+        res = session.as_other_user(_verify_checker_view)
+    finally:
+        try:
+            session.review_as_checker(name, "reject")
+        except Exception:
+            pass
+
+    ok = (
+        res["default_is_others"]
+        and res["shown"]
+        and res["approve"]
+        and res["reject"]
+        and res["maker_hit"]
+        and res["date_ok"]
     )
-    ok = shown and approve and reject
     return ok, (
-        f"Checker sees the document: {'yes' if shown else 'NO'}, "
-        f"approve option: {'yes' if approve else 'NO'}, "
-        f"reject option: {'yes' if reject else 'NO'}. "
-        "Maker and upload date filters are not checked by the script"
+        f"Default filter='{res['default_label']}', listed={res['shown']}, "
+        f"approve={res['approve']}, reject={res['reject']}, maker filter={res['maker_hit']}, "
+        f"upload date filter={res['date_ok']}"
     )
 
 

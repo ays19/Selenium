@@ -24,10 +24,10 @@ def restore_deleted(session: c.DmsSession) -> tuple[bool, str]:
     if not ok:
         return False, message
 
-    found = session.explorer.search_finds(name, tries=3)
-    return found, f"{message}. Document " + (
-        "found in quick search again" if found else "NOT found in quick search after restore"
-    )
+    found_search = session.explorer.search_finds(name, tries=3)
+    found_explorer = session.explorer.explorer_has(info["doc_type"], name)
+    passed = found_search and found_explorer
+    return passed, f"{message}. Quick search: {'yes' if found_search else 'NO'}, Explorer: {'yes' if found_explorer else 'NO'}"
 
 
 SCENARIOS = [("Restore deleted", restore_deleted)]

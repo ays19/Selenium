@@ -68,7 +68,7 @@ EXTENSIONS: list[str] = [
 DOC_TYPE_SEARCH_TERMS: list[str] = (
     [os.getenv("DOC_TYPE", "").strip()]
     if (os.getenv("DOC_TYPE") or "").strip()
-    else ["1 FC Test updated/aa", "aa", "doc", "inv", "rep", "con", "ent", "ion", "ing"]
+    else ["/LMG DocType/", "LMG DocType"]
 )
 
 # Optional parent category name for temporary AUTO_* categorization tests

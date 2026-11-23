@@ -28,22 +28,26 @@ def bulk_upload(session: c.DmsSession) -> tuple[bool, str]:
     header = session.bulk_upload.template_header(template)
     doc_id = session.bulk_upload.selected_doc_type_id()
     meta_fields, unique_vals = session.bulk_upload.fetch_metadata_and_unique_values(doc_id)
+    date_fmt = session.bulk_upload.system_date_format()
 
     run_id = datetime.now().strftime("%H%M%S")
-    files = [prepare_sized_file(session, ext, min_mb=1.1) for ext in ("pdf", "ppt", "docx")]
+    files = [prepare_sized_file(session, ext, min_mb=1.1) for ext in ("pdf", "ppt", "txt")]
     used_unique = {k: set(str(v) for v in vals if v is not None) for k, vals in unique_vals.items()}
     rows = [
-        session.bulk_upload.build_valid_csv_row(header, idx, path, run_id, meta_fields, used_unique)
+        session.bulk_upload.build_valid_csv_row(header, idx, path, run_id, meta_fields, used_unique, date_fmt)
         for idx, path in enumerate(files)
     ]
+    doc_names = [row[0] for row in rows]
 
     csv_path = session.bulk_upload.write_csv(os.path.join(c.DOWNLOAD_DIR, "AUTO_bulk.csv"), header, rows)
     ok, message = session.bulk_upload.bulk_submit(doc_type, csv_path, files)
-    session.bulk_upload.wait_for_ajax_idle(timeout=6)
-    report_error = "error" in session.bulk_upload.body_text()
-    return ok and not report_error, f"{message}. " + (
-        "Upload record shows an error" if report_error else "No error shown"
-    )
+    if not ok:
+        return False, message
+
+    missing = [name for name in doc_names if not session.explorer.search_finds(name, tries=3)]
+    if missing:
+        return False, f"{message}; uploaded 1MB+ docs missing from Quick Search: {missing}"
+    return True, f"{message}; verified in Quick Search: {doc_names}"
 
 
 SCENARIOS = [("Bulk upload", bulk_upload)]

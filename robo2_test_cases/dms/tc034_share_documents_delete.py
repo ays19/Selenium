@@ -19,7 +19,10 @@ def delete_share(session: c.DmsSession) -> tuple[bool, str]:
     ok, msg = session.document.delete_shared_participant()
     if not ok:
         return False, msg
-    return True, f"Shared participant '{shared_with}' removed from '{name}' successfully"
+    icons = session.explorer.explorer_doc_icons(info["doc_type"], name)
+    if not icons["found"] or icons["shared"]:
+        return False, f"{msg}, but Explorer shared icon still active ({icons})"
+    return True, f"{msg}. Shared participant '{shared_with}' removed and Explorer shared icon cleared"
 
 
 SCENARIOS = [("Delete share", delete_share)]

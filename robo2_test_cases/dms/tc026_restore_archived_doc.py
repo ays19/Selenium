@@ -34,7 +34,7 @@ def restore_archived(session: c.DmsSession) -> tuple[bool, str]:
         missing.append("explorer view")
     if not session.explorer.search_finds(name, tries=3):
         missing.append("quick search")
-    if not session.explorer.advanced_finds(name):
+    if not session.explorer.advanced_finds(name, doc_type=info["doc_type"]):
         missing.append("advanced search")
     if missing:
         return False, f"{message}. Restored document is not shown in: {', '.join(missing)}"

@@ -16,9 +16,15 @@ FILES_TO_UPLOAD = ["png", "mp3", "docx"]  # image, media, office file
 
 def upload_ext(ext: str):
     def _scenario(session: c.DmsSession) -> tuple[bool, str]:
+        doc_name = datetime.now().strftime(f"AUTO_{ext}_%H%M%S")
         session.upload.prepare_upload(ext)
-        session.upload.set_document_name(datetime.now().strftime(f"AUTO_{ext}_%H%M%S"))
-        return session.upload.click_save_upload()
+        session.upload.set_document_name(doc_name)
+        ok, message = session.upload.click_save_upload()
+        if not ok:
+            return False, message
+        if not session.explorer.search_finds(doc_name, tries=5):
+            return False, f"Upload showed '{message}' but '{doc_name}' was not found in Quick Search"
+        return True, f"{message} ('{doc_name}' found in Quick Search)"
 
     return _scenario
 

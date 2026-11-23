@@ -28,8 +28,9 @@ def update_category(session: c.DmsSession) -> tuple[bool, str]:
         restored, note = session.categorization.rename_item(new_name, category)
     except Exception as error:
         restored, note = False, str(error)
-    back = "restored" if restored else f"NOT restored ({note}), rename '{new_name}' back to '{category}' by hand"
-    return True, f"{message} ({category} -> {new_name}). Original name {back}"
+    if not restored:
+        return False, f"{message} ({category} -> {new_name}), BUT original name could NOT be restored ({note})"
+    return True, f"{message} ({category} -> {new_name}). Original name restored"
 
 
 SCENARIOS = [("Update category", update_category)]

@@ -24,8 +24,7 @@ def version_upload(session: c.DmsSession) -> tuple[bool, str]:
     if not ok:
         return False, message
 
-    session.document.show_versions(EXTENDED_NAME)
-    shown = session.document.wait_text(EXTENDED_NAME)
+    shown = session.document.is_version_listed(EXTENDED_NAME)
     return shown, f"{message}. Extended name '{EXTENDED_NAME}' " + (
         "shown in version history" if shown else "not shown in version history"
     )

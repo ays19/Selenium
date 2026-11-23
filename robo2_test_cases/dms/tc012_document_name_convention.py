@@ -14,7 +14,7 @@ TEST_CASE_ID = "DMS-TC012"
 
 def document_name_convention(session: c.DmsSession) -> tuple[bool, str]:
     doc_type = os.getenv("NAME_CONVENTION_DOC_TYPE", "").strip()
-    session.upload.prepare_upload("pdf", doc_type)
+    pending_name = session.upload.prepare_upload("pdf", doc_type)
     selected = session.upload.current_doc_type()
     wanted = doc_type.strip("/").split("/")[-1]
     if wanted.lower() != selected.lower():
@@ -28,26 +28,23 @@ def document_name_convention(session: c.DmsSession) -> tuple[bool, str]:
     session.upload.fill_convention_fields(session.upload.convention_fields(convention))
     session.upload.focus_file_name_for_convention()
 
-    values = session.upload.meta_values_excluding_dates()
-    if not values:
+    field_vals, created_date = session.upload.form_field_values()
+    if not field_vals:
         raise c.SetupError("no meta-data value was filled for this doc-type")
 
-    matched, name = session.upload.wait_generated_file_name(values)
+    expected_name = session.upload.expected_convention_name(pending_name, convention, field_vals, created_date)
+    matched, name = session.upload.wait_exact_file_name(expected_name)
     if not matched:
-        return False, f"Document name '{name}' does not contain the meta-data values {values} (convention {convention})"
-    used = [v for v in values if v in name]
+        return False, f"Document name '{name}' did not match expected '{expected_name}' (convention {convention})"
 
-    had_checker = session.upload.has_visible_checker()
     ok, message = session.upload.click_save_upload()
     if not ok:
         return False, f"Document name was '{name}' but Save failed ({message})"
-    if had_checker:
-        session.review.review_document(name, "approve")
     if not session.explorer.search_finds(name, tries=5):
         return False, f"Document saved, but not found in search with the name '{name}'"
 
     return True, (
-        f"Document name auto-selected as '{name}' from meta-data {used} (convention {convention}); "
+        f"Document name auto-selected as '{name}' matching '{expected_name}' (convention {convention}); "
         "saved and found in search"
     )
 

@@ -30,7 +30,7 @@ def main() -> None:
         TEST_CASE_ID,
         SCENARIOS,
         doc=__doc__,
-        required_env=[("EXPLORER_DOC_TYPE", "(path like /1 FC Test updated/aa/)")],
+        required_env=[("EXPLORER_DOC_TYPE", "(path like /LMG DocType/)")],
     )
 
 

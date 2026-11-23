@@ -487,7 +487,7 @@ MODULES = {
                 "Bulk Upload Valid Template",
             ),
             (
-                "DMS-TC0101",
+                "DMS-TC101",
                 "tc101_master_table_method_fetch_multiple_record.py",
                 "Master Table Method (Multiple Record)",
             ),

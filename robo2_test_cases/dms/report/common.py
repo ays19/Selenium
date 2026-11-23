@@ -108,6 +108,7 @@ class ReportSession:
         self.downloads_page = RequestedDownloadsPage(driver, wait)
         self._logged_in = False
         self.current_role = ""
+        self.current_username = ""
 
     def step(self, title: str):
         return self.reporter.step(title)
@@ -120,6 +121,7 @@ class ReportSession:
             self.login_page.login_as(profile.username, profile.password)
             self._logged_in = True
         self.current_role = role_key
+        self.current_username = profile.username
         return profile.username
 
     def open_report(self, route: str, check_accessible: bool = True) -> None:
@@ -185,6 +187,7 @@ class ReportSession:
             own_text, other_text = expected_scope_texts(role)
 
             if visibility == "own":
+                own_text = (self.current_username or own_text).strip()
                 if not own_text or not other_text:
                     raise BlockedTest(
                         "Set REPORT_USERNAME and REPORT_MANAGER_USERNAME in .env.report."
@@ -224,6 +227,7 @@ class ReportSession:
             own_text, other_text = expected_scope_texts(self.current_role)
 
             if visibility == "own":
+                own_text = (self.current_username or own_text).strip()
                 if own_text.casefold() not in dropdown_text and own_text.casefold() not in page_text:
                     raise AssertionError(f"Expected own user '{own_text}' on the report.")
                 if other_text.casefold() in dropdown_text or other_text.casefold() in page_text:

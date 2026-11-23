@@ -26,7 +26,7 @@ def archive(session: c.DmsSession) -> tuple[bool, str]:
         still_shown.append("explorer view")
     if session.explorer.search_finds(name):
         still_shown.append("quick search")
-    if session.explorer.advanced_finds(name):
+    if session.explorer.advanced_finds(name, doc_type=info["doc_type"]):
         still_shown.append("advanced search")
     if still_shown:
         return False, f"{message}. Archived document is still shown in: {', '.join(still_shown)}"

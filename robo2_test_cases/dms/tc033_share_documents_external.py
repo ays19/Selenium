@@ -6,21 +6,38 @@ Share Documents (External Share)
 3. Click on "Share" button
 Documents should be shared with all system users & anyone with the link can access those documents.
 """
+import urllib.request
+
 import common as c
 
 TEST_CASE_ID = "DMS-TC033"
 
 
+def _check_public_url(url: str) -> tuple[bool, str]:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        final_url = resp.geturl().lower()
+        code = resp.getcode()
+    if code != 200 or "/login" in final_url:
+        return False, f"public URL returned HTTP {code} at '{final_url}'"
+    return True, f"public URL accessible without login (HTTP {code})"
+
+
 def share_public(session: c.DmsSession) -> tuple[bool, str]:
-    info = session.upload_document("pdf", share="public")
+    info = session.new_document("pdf")
     name = info["name"]
+    ok, msg, share_url = session.document.share_on_document_view("public")
+    if not ok:
+        return False, msg
+    if "/dms/document/public/view/" not in share_url:
+        share_url = session.document.read_share_link_input()
+    if "/dms/document/public/view/" not in share_url:
+        return False, f"expected '/dms/document/public/view/' in share URL, got '{share_url}'"
 
-    if not session.explorer.search_finds(name, tries=3):
-        return False, f"Uploaded as '{info['shared_with']}', but document '{name}' was not found in search"
-
-    session.explorer.open_document(name)
-    session.document.expand_share_section()
-    return True, f"Document '{name}' uploaded and shared externally as '{info['shared_with']}' successfully"
+    access_ok, access_msg = _check_public_url(share_url)
+    icons = session.explorer.explorer_doc_icons(info["doc_type"], name)
+    passed = access_ok and icons["found"] and icons["shared"]
+    return passed, f"{msg}; {access_msg}; Explorer shared icon: {'yes' if icons['shared'] else 'NO'}"
 
 
 SCENARIOS = [("Public share", share_public)]

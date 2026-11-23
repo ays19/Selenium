@@ -6,7 +6,6 @@ Cancel Checkout Doc
 3. Click on "Yes" button
 1. Document should be checked in with proper confirmation message.
 2. Check-out icon shouldn't show in explorer view for admin & the user whom do the check out.
-(admin only: the second user part is not tested here)
 """
 import common as c
 
@@ -27,8 +26,11 @@ def cancel_check_out(session: c.DmsSession) -> tuple[bool, str]:
         return False, message
 
     still_listed = session.document.is_in_checked_out_list(name, timeout=4)
-    return (not still_listed), (
-        f"{message}. Removed from Checked Out Documents: {'yes' if not still_listed else 'NO'}"
+    icons = session.explorer.explorer_doc_icons(info["doc_type"], name)
+    passed = (not still_listed) and icons["found"] and (not icons["locked"])
+    return passed, (
+        f"{message}. Removed from Checked Out Documents: {'yes' if not still_listed else 'NO'}. "
+        f"Explorer checkout lock icon absent: {'yes' if not icons['locked'] else 'NO'}"
     )
 
 

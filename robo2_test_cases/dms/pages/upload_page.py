@@ -26,31 +26,28 @@ class UploadPage(BasePage):
     """Encapsulates Standard Upload, Pending Documents list/grid, Metadata & Watermarks."""
 
     # Attach & Pending locators
-    NEXT_BTN = (By.XPATH, "//button[normalize-space()='Next']")
+    NEXT_BTN = (By.ID, "submit-all")
     DROPZONE_INPUT = (By.CSS_SELECTOR, "input.dz-hidden-input")
+    DROPZONE_PREVIEW = (By.CSS_SELECTOR, ".dz-preview")
     DROPZONE_STATUS = (By.CSS_SELECTOR, ".dz-preview.dz-success, .dz-preview.dz-error")
     DROPZONE_ERRORS = (By.CSS_SELECTOR, ".dz-preview.dz-error .dz-error-message")
+    DROPZONE_FILENAME = (By.CSS_SELECTOR, ".dz-preview .dz-filename")
 
     LIST_CONTAINER = (By.ID, "list_view_container")
+    GRID_CONTAINER = (By.ID, "grid_view_container")
+    LIST_VIEW_BTN = (By.ID, "list_view_btn")
+    GRID_VIEW_BTN = (By.ID, "grid_view_btn")
     PENDING_ROW = (By.CSS_SELECTOR, "#list_view_container tr.pending-meta")
+    PENDING_ITEM = (By.CSS_SELECTOR, ".pending-meta")
     SELECTED_DESELECT_ROWS = "#selected_file_div .deselect-row"
     SELECTED_DELETE_XPATH = (
         "//*[@id='selected_file_div']//*[contains(@class, 'deselect-row')]//i[contains(@class, 'delete-item')]"
     )
-    GRID_VIEW_BTN = (
-        By.XPATH,
-        "//*[contains(@title,'Grid') or contains(@data-original-title,'Grid') or contains(@aria-label,'Grid')]",
-    )
-    LOWER_ALPHA = "translate({0}, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
-    VIEW_ICON_COND = (
-        "[contains(" + LOWER_ALPHA.format("@title") + ", 'view document') or contains("
-        + LOWER_ALPHA.format("@data-original-title") + ", 'view document') or contains("
-        + LOWER_ALPHA.format("@aria-label") + ", 'view document')]"
-    )
-    PREVIEW_POPUP_CSS = (
-        ".modal.show, .modal.in, [role='dialog'], .swal2-popup, .ant-modal, "
-        ".mat-dialog-container, iframe, embed, video, audio"
-    )
+    VIEW_MODAL = (By.ID, "viewFiles")
+
+    def __init__(self, driver, wait):
+        super().__init__(driver, wait)
+        self._created_watermarks: list[str] = []
 
     # Metadata form locators
     DOC_TYPE_BOX = (By.CSS_SELECTOR, "span.select2-selection[aria-labelledby='select2-DocumentType-container']")
@@ -126,40 +123,70 @@ class UploadPage(BasePage):
             return False
 
     def attach_file_check(self, ext: str) -> tuple[bool, str]:
-        """Attach a sample file on Standard Upload page and verify it appears."""
+        """Attach a sample file on Standard Upload page and verify Dropzone accepts it."""
         sample = self.find_sample_file(ext)
         if not sample:
             return False, "sample file missing"
         file_name, path = sample
+        max_bytes = 20 * 1024 * 1024
+        if os.path.getsize(path) > max_bytes:
+            return False, f"sample '{file_name}' exceeds 20 MB"
 
         self.driver.get(cfg.ATTACH_URL)
-        self.wait.until(EC.presence_of_element_located(self.FILE_INPUT))
-        next_was_ready = self._next_is_ready()
-
-        def _attached(d) -> bool:
-            return (
-                file_name.lower() in self.body_text()
-                or bool(d.find_elements(By.CSS_SELECTOR, ".dz-preview, .dz-filename"))
-                or (not next_was_ready and self._next_is_ready())
+        try:
+            file_input = WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located(self.DROPZONE_INPUT)
             )
+        except TimeoutException:
+            inputs = self.driver.find_elements(*self.FILE_INPUT)
+            if not inputs:
+                return False, "Dropzone file input not found"
+            file_input = inputs[0]
 
-        for file_input in self.driver.find_elements(*self.FILE_INPUT):
-            self.driver.execute_script(
-                "arguments[0].style.display='block'; arguments[0].style.visibility='visible';",
-                file_input,
-            )
-            try:
-                file_input.send_keys(path)
-                WebDriverWait(self.driver, 6).until(_attached)
-                return True, "attached"
-            except Exception:
-                continue
+        self.driver.execute_script(
+            "arguments[0].style.display='block'; arguments[0].style.visibility='visible';",
+            file_input,
+        )
+        file_input.send_keys(path)
 
-        return False, "file not shown after attach"
+        try:
+            WebDriverWait(self.driver, 30).until(lambda d: d.find_elements(*self.DROPZONE_STATUS))
+        except TimeoutException:
+            return False, f"'{file_name}' did not finish Dropzone processing"
+
+        errors = [
+            e.text.strip()
+            for e in self.driver.find_elements(*self.DROPZONE_ERRORS)
+            if e.text.strip()
+        ]
+        if errors:
+            return False, errors[0]
+
+        shown_names = [
+            (e.text or e.get_attribute("textContent") or "").strip().lower()
+            for e in self.driver.find_elements(*self.DROPZONE_FILENAME)
+        ]
+        if file_name.lower() not in " ".join(shown_names):
+            return False, f"'{file_name}' missing from Dropzone preview ({shown_names})"
+        if not self._next_is_ready():
+            return False, f"Next button (#submit-all) stayed disabled after attaching '{file_name}'"
+        return True, f"attached '{file_name}'"
 
     def open_pending_list(self) -> None:
         self.driver.get(cfg.PENDING_URL)
         self.wait.until(EC.presence_of_element_located(self.LIST_CONTAINER))
+        if not self.visible("#list_view_container"):
+            btns = self.driver.find_elements(*self.LIST_VIEW_BTN)
+            if btns:
+                self.click(btns[0])
+                self.wait.until(lambda _d: bool(self.visible("#list_view_container")))
+        try:
+            WebDriverWait(self.driver, 12).until(
+                lambda d: bool(d.find_elements(*self.PENDING_ROW))
+                or bool(d.find_elements(By.CSS_SELECTOR, ".nothingPending"))
+            )
+        except TimeoutException:
+            pass
         self.wait_for_ajax_idle(timeout=8)
 
     def pending_page_info(self) -> tuple[str, int | None]:
@@ -176,11 +203,24 @@ class UploadPage(BasePage):
             last = shown.split("-")[-1].strip()
             if total is not None and last.isdigit() and int(last) >= total:
                 return False
+            before_rows = tuple(
+                r.get_attribute("data-pending-doc-name")
+                for r in self.driver.find_elements(*self.PENDING_ROW)
+            )
             more = [b for b in self.visible("#pagination button.next") if b.is_enabled()]
             if more:
                 self.click(more[0])
                 try:
-                    WebDriverWait(self.driver, 15).until(lambda _d: self.pending_page_info()[0] != shown)
+                    WebDriverWait(self.driver, 15, ignored_exceptions=(StaleElementReferenceException,)).until(
+                        lambda d: (
+                            self.pending_page_info()[0] != shown
+                            and bool(d.find_elements(*self.PENDING_ROW))
+                            and tuple(
+                                r.get_attribute("data-pending-doc-name")
+                                for r in d.find_elements(*self.PENDING_ROW)
+                            ) != before_rows
+                        )
+                    )
                 except TimeoutException:
                     pass
                 self.wait_for_ajax_idle(timeout=5)
@@ -231,13 +271,17 @@ class UploadPage(BasePage):
         )
 
     def click_pending_icon(self, file_name: str) -> bool:
-        for _ in range(30):
-            icons = [i for i in self.driver.find_elements(*self._pending_row_icon(file_name)) if i.is_displayed()]
-            if icons:
-                self.click(icons[0])
-                return True
-            if not self.pending_next_page():
-                return False
+        for attempt in range(2):
+            for _ in range(30):
+                self.wait_for_ajax_idle(timeout=4)
+                icons = [i for i in self.driver.find_elements(*self._pending_row_icon(file_name)) if i.is_displayed()]
+                if icons:
+                    self.click(icons[0])
+                    return True
+                if not self.pending_next_page():
+                    break
+            if attempt == 0:
+                self.open_pending_list()
         return False
 
     def attach_new_file(self, path: str) -> str | None:
@@ -287,24 +331,65 @@ class UploadPage(BasePage):
             pending_names.append(name)
         return pending_names
 
+    def find_pending_row(self, file_name: str):
+        for _ in range(30):
+            rows = [
+                r for r in self.driver.find_elements(
+                    By.XPATH,
+                    f"//tr[contains(@class,'pending-meta') and @data-pending-doc-name={self.xpath_text(file_name)}]",
+                )
+                if r.is_displayed()
+            ]
+            if rows:
+                return rows[0]
+            if not self.pending_next_page():
+                return None
+        return None
+
+    def has_ocr_icon(self, file_name: str) -> bool:
+        self.open_pending_list()
+        row = self.find_pending_row(file_name)
+        if row is None:
+            raise SetupError(f"pending file '{file_name}' was not found in Pending Documents list")
+        return any(el.is_displayed() for el in row.find_elements(By.CSS_SELECTOR, ".ocr-item"))
+
+    def run_pending_ocr(self, file_name: str, timeout: int = 60) -> tuple[bool, str]:
+        self.open_pending_list()
+        row = self.find_pending_row(file_name)
+        if row is None:
+            return False, f"pending file '{file_name}' not found"
+        icons = [el for el in row.find_elements(By.CSS_SELECTOR, ".ocr-item") if el.is_displayed()]
+        if not icons:
+            return False, f"OCR icon (.ocr-item) not shown for '{file_name}'"
+        ok, msg = self.message_after(lambda: self.click(icons[0]), seconds=timeout)
+        try:
+            WebDriverWait(self.driver, timeout).until(lambda _d: not self.visible(".blockUI"))
+        except TimeoutException:
+            pass
+        self.wait_for_ajax_idle(timeout=5)
+        return ok, msg
+
     def select_pending_files(self, pending_names: list[str]) -> None:
         self.open_pending_list()
         self.clear_selected_files()
         for idx, name in enumerate(pending_names):
             if idx > 0:
                 self.open_pending_list()
-            self.click_pending_icon(name)
-            try:
-                WebDriverWait(self.driver, 5).until(lambda _d, n=idx + 1: self.selected_count() >= n)
-            except TimeoutException:
-                pass
+            if not self.click_pending_icon(name):
+                raise SetupError(f"pending file '{name}' could not be selected")
+            WebDriverWait(self.driver, 8).until(lambda _d, n=idx + 1: self.selected_count() >= n)
 
     def _find_grid_view_icon(self, ext: str):
-        name = self.driver.find_element(
-            By.XPATH, f"//*[contains({self.LOWER_ALPHA.format('normalize-space(text())')}, '.{ext}')]"
-        )
-        card = name.find_element(By.XPATH, f"ancestor::*[.//*{self.VIEW_ICON_COND}][1]")
-        return card.find_element(By.XPATH, f".//*{self.VIEW_ICON_COND}")
+        target_suffix = "." + ext.lower()
+        for card in self.driver.find_elements(*self.PENDING_ITEM):
+            if not card.is_displayed():
+                continue
+            doc_name = (card.get_attribute("data-pending-doc-name") or "").strip().lower()
+            if doc_name.endswith(target_suffix):
+                icons = [i for i in card.find_elements(By.CSS_SELECTOR, ".view-item") if i.is_displayed()]
+                if icons:
+                    return icons[0]
+        raise LookupError(f"no visible .{ext} card with view icon")
 
     def _locate_view_icon_across_pages(self, ext: str):
         for _ in range(15):
@@ -313,30 +398,56 @@ class UploadPage(BasePage):
             except Exception:
                 if not self.pending_next_page():
                     break
-                try:
-                    self.wait.until(EC.element_to_be_clickable(self.GRID_VIEW_BTN)).click()
-                    self.wait_for_ajax_idle(timeout=5)
-                except Exception:
-                    pass
         return None
 
-    def _preview_result(self, old_tabs: list[str]) -> str | None:
+    def _preview_result(self, old_tabs: list[str], ext: str) -> str | None:
         if len(self.driver.window_handles) > len(old_tabs):
-            return "preview opened in new tab"
-        if self.visible(self.PREVIEW_POPUP_CSS):
-            return "preview opened"
-        text = self.body_text()
-        if "preview" in text and any(w in text for w in ("not available", "unavailable", "not supported")):
-            return "'preview not available' message shown"
+            self.driver.switch_to.window(self.driver.window_handles[-1])
+            url = (self.driver.current_url or "").lower()
+            self.driver.switch_to.window(old_tabs[0])
+            if url and not url.startswith("about:blank") and "/login" not in url:
+                return "preview opened in new tab"
+            return None
+
+        modals = self.visible("#viewFiles")
+        if modals:
+            has_media = any(
+                el.is_displayed()
+                for el in modals[0].find_elements(
+                    By.CSS_SELECTOR,
+                    "#file_container iframe[src], #file_container img[src], "
+                    "#file_container audio[src], #file_container video[src], "
+                    "#file_container object[data], .temp-modal-preview table.preview-table",
+                )
+            )
+            if has_media:
+                return "preview opened"
+            fc_text = " ".join(
+                (el.text or "").lower()
+                for el in modals[0].find_elements(By.CSS_SELECTOR, "#file_container")
+            )
+            if "preview" in fc_text and any(w in fc_text for w in ("not available", "unavailable", "not supported")):
+                return "'Preview Not Available!' message shown"
         return None
+
+    def _open_pending_grid_view(self) -> bool:
+        self.driver.get(cfg.PENDING_URL)
+        self.wait.until(EC.presence_of_element_located(self.LIST_CONTAINER))
+        try:
+            self.wait.until(EC.element_to_be_clickable(self.GRID_VIEW_BTN)).click()
+            WebDriverWait(self.driver, 10).until(lambda _d: bool(self.visible("#grid_view_container")))
+            WebDriverWait(self.driver, 10).until(
+                lambda d: bool([el for el in d.find_elements(*self.PENDING_ITEM) if el.is_displayed()])
+                or bool(d.find_elements(By.CSS_SELECTOR, ".nothingPending"))
+            )
+            self.wait_for_ajax_idle(timeout=5)
+            return True
+        except Exception:
+            return False
 
     def view_pending_document(self, ext: str) -> tuple[bool, str]:
         """Switch Pending Documents to Grid View, preview a `.ext` file, and close the preview."""
-        self.driver.get(cfg.PENDING_URL)
-        try:
-            self.wait.until(EC.element_to_be_clickable(self.GRID_VIEW_BTN)).click()
-            self.wait_for_ajax_idle(timeout=5)
-        except Exception:
+        if not self._open_pending_grid_view():
             return False, "Grid View icon not found"
 
         icon = self._locate_view_icon_across_pages(ext)
@@ -345,9 +456,8 @@ class UploadPage(BasePage):
             if sample:
                 _, copy_path = self.unique_copy(sample[1])
                 self.attach_new_file(copy_path)
-                self.driver.get(cfg.PENDING_URL)
-                self.wait.until(EC.element_to_be_clickable(self.GRID_VIEW_BTN)).click()
-                self.wait_for_ajax_idle(timeout=5)
+                if not self._open_pending_grid_view():
+                    return False, "Grid View failed after attaching sample"
                 icon = self._locate_view_icon_across_pages(ext)
         if icon is None:
             return False, f"no .{ext} document in pending list"
@@ -355,16 +465,22 @@ class UploadPage(BasePage):
         old_tabs = list(self.driver.window_handles)
         try:
             self.click(icon)
-            result = WebDriverWait(self.driver, 8).until(lambda _d: self._preview_result(old_tabs))
+            result = WebDriverWait(self.driver, 12).until(lambda _d: self._preview_result(old_tabs, ext))
         except Exception:
-            return False, "nothing happened after clicking view icon"
+            return False, f"no preview content loaded after clicking view icon for .{ext}"
 
         if len(self.driver.window_handles) > len(old_tabs):
-            self.driver.switch_to.window(self.driver.window_handles[-1])
-            self.driver.close()
-            self.driver.switch_to.window(old_tabs[0])
+            self.close_extra_tabs(old_tabs[0])
         else:
-            self.driver.switch_to.active_element.send_keys(Keys.ESCAPE)
+            close_btns = self.visible("#viewFiles button.close, #viewFiles [data-dismiss='modal']")
+            if close_btns:
+                self.click(close_btns[0])
+            else:
+                self.driver.switch_to.active_element.send_keys(Keys.ESCAPE)
+            try:
+                WebDriverWait(self.driver, 5).until(EC.invisibility_of_element_located(self.VIEW_MODAL))
+            except TimeoutException:
+                pass
         return True, result
 
     # ------------------------------------------------------------------
@@ -384,6 +500,8 @@ class UploadPage(BasePage):
                 ActionChains(self.driver).send_keys(letter).perform()
                 time.sleep(0.15)
             try:
+                time.sleep(0.3)
+                self.wait_for_ajax_idle(timeout=5)
                 WebDriverWait(self.driver, 8).until(lambda _d: bool(self.select2_options(self.DOC_TYPE_OPTION)))
             except TimeoutException:
                 continue
@@ -393,24 +511,27 @@ class UploadPage(BasePage):
                 index = self.best_option_index(options, term)
                 option = options[index]
                 print(f"   doc-type: picked '{option.get_attribute('title')}' (result {index + 1} of {len(options)})")
-                if index == 0:
-                    ActionChains(self.driver).send_keys(Keys.ENTER).perform()
-                else:
-                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'});", option)
-                    ActionChains(self.driver).move_to_element(option).click().perform()
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'});", option)
+                ActionChains(self.driver).move_to_element(option).click().perform()
                 self.wait_for_ajax_idle(timeout=5)
                 selected = self.current_doc_type()
                 if selected and "search for a document type" not in selected.lower():
                     return
                 options = self.select2_options(self.DOC_TYPE_OPTION)
                 if options:
-                    ActionChains(self.driver).click(options[self.best_option_index(options, term)]).perform()
+                    opt = options[self.best_option_index(options, term)]
+                    ActionChains(self.driver).move_to_element(opt).click().perform()
                     self.wait_for_ajax_idle(timeout=5)
                     return
         raise SetupError("document type could not be selected")
 
     def current_doc_type(self) -> str:
-        return self.driver.find_element(*self.DOC_TYPE_CONTAINER_TEXT).text.replace("×", "").strip()
+        el = self.driver.find_element(*self.DOC_TYPE_CONTAINER_TEXT)
+        title = (el.get_attribute("title") or "").replace("×", "").strip()
+        text = (el.text or "").replace("×", "").strip()
+        if title and "search for" not in title.lower():
+            return title
+        return text
 
     def select_checker(self, preferred_checker: str | None = None) -> bool:
         checker_divs = self.driver.find_elements(*self.CHECKER_DIV)
@@ -617,6 +738,7 @@ class UploadPage(BasePage):
         doc_type: str | None = None,
         fill: bool = True,
         require_checker: bool = False,
+        checker_name: str | None = None,
     ) -> str:
         sample = self.find_sample_file(ext)
         if not sample:
@@ -650,6 +772,10 @@ class UploadPage(BasePage):
                     except TimeoutException:
                         pass
                 checker_visible = self.has_visible_checker()
+                if not require_checker and checker_visible:
+                    raise SetupError(
+                        f"Doc type '{self.current_doc_type()}' has Maker-Checker enabled; configure a non-checker DOC_TYPE"
+                    )
                 if require_checker and not checker_visible:
                     raise SetupError(
                         f"Doc type '{self.current_doc_type()}' (CHECKER_DOC_TYPE={doc_type!r}) "
@@ -662,7 +788,7 @@ class UploadPage(BasePage):
                         )
                     except TimeoutException:
                         pass
-                    if not self.select_checker():
+                    if not self.select_checker(checker_name):
                         raise SetupError(
                             f"Checker dropdown (#checker-div) is shown for '{self.current_doc_type()}', "
                             f"but no checker could be selected."
@@ -670,6 +796,10 @@ class UploadPage(BasePage):
             else:
                 self.select_document_type(terms)
                 self.wait_for_ajax_idle(timeout=5)
+                if not require_checker and self.has_visible_checker():
+                    raise SetupError(
+                        f"Doc type '{self.current_doc_type()}' has Maker-Checker enabled; configure a non-checker DOC_TYPE"
+                    )
         except SetupError:
             raise
         except Exception as exc:
@@ -695,14 +825,18 @@ class UploadPage(BasePage):
         doc_type: str | None = None,
         share: str | None = None,
         require_checker: bool = False,
-        approve_fn=None,
+        checker_name: str | None = None,
     ) -> dict:
         try:
-            self.prepare_upload(ext, doc_type, require_checker=require_checker)
+            self.prepare_upload(
+                ext,
+                doc_type,
+                require_checker=require_checker,
+                checker_name=checker_name,
+            )
             info = {"doc_type": self.current_doc_type(), "values": self.filled_values()}
             if share:
                 info["shared_with"] = self.select_share(share)
-            had_checker = self.has_visible_checker()
             info["name"] = self.set_document_name(datetime.now().strftime("AUTO_%H%M%S"))
             ok, message = self.click_save_upload()
         except SetupError:
@@ -712,19 +846,16 @@ class UploadPage(BasePage):
         if not ok:
             raise SetupError(f"test document did not upload ({message})")
         self.wait_for_ajax_idle(timeout=5)
-        if had_checker and not require_checker and approve_fn is not None:
-            ok_app, msg_app = approve_fn(info["name"], "approve")
-            if not ok_app:
-                raise SetupError(f"test document uploaded to checker doc-type but could not be approved ({msg_app})")
-            self.wait_for_ajax_idle(timeout=5)
         return info
 
-    def upload_with_values(self, doc_type: str, values: dict[str, str]) -> tuple[bool, str]:
+    def upload_with_values(
+        self, doc_type: str, values: dict[str, str], doc_name: str | None = None
+    ) -> tuple[bool, str]:
         """Upload a PDF to `doc_type` with explicit metadata field values."""
         self.prepare_upload("pdf", doc_type)
         for label, value in values.items():
             self.fill_field(label, value)
-        self.set_document_name(datetime.now().strftime("AUTO_%H%M%S%f"))
+        self.set_document_name(doc_name or datetime.now().strftime("AUTO_%H%M%S%f"))
         return self.click_save_upload()
 
     # ------------------------------------------------------------------
@@ -788,11 +919,54 @@ class UploadPage(BasePage):
         except Exception:
             pass
 
-    def wait_generated_file_name(self, expected_parts: list[str], timeout: int = 10) -> tuple[bool, str]:
+    def form_field_values(self) -> tuple[dict[str, str], str]:
+        panel = self.driver.find_element(*self.METADATA_PANEL)
+        values: dict[str, str] = {}
+        for el in panel.find_elements(
+            By.CSS_SELECTOR, ".meta-data-gen-wrap [name], .locked-meta-data-gen-wrap-hidden [name]"
+        ):
+            name = (el.get_attribute("name") or "").strip()
+            if name:
+                values[name] = (el.get_attribute("value") or "").strip()
+        created_date = ""
+        cd = self.driver.find_elements(By.ID, "created_date")
+        if cd:
+            created_date = (cd[0].get_attribute("value") or "").strip()
+        return values, created_date
+
+    @staticmethod
+    def expected_convention_name(
+        pending_name: str,
+        convention: str,
+        field_values: dict[str, str],
+        created_date: str = "",
+    ) -> str:
+        name_parts = pending_name.split(".")
+        if len(name_parts) > 1:
+            name_parts.pop()
+        raw_no_ext = ",".join(name_parts).replace(",", ".", 1) if len(name_parts) > 1 else name_parts[0]
+        raw_no_ext = os.path.splitext(pending_name)[0] if len(pending_name.split(".")) <= 2 else raw_no_ext
+
+        out = []
+        for raw_tok in convention.strip("[]'\" ").split(","):
+            m = re.search(r"\[(\d+):(\d+)\]", raw_tok)
+            clean_tok = re.sub(r"\[\d+:\d+\]", "", raw_tok).strip()
+            if clean_tok == "raw_filename":
+                val = raw_no_ext
+            elif clean_tok == "upload_date":
+                val = created_date
+            elif clean_tok in field_values:
+                val = field_values[clean_tok]
+            else:
+                val = clean_tok
+            if m and val:
+                val = val[int(m.group(1)) - 1:int(m.group(2))]
+            out.append(val)
+        return "".join(out)
+
+    def wait_exact_file_name(self, expected_name: str, timeout: int = 10) -> tuple[bool, str]:
         try:
-            WebDriverWait(self.driver, timeout).until(
-                lambda _d: any(v in self.field_value("file_name") for v in expected_parts)
-            )
+            WebDriverWait(self.driver, timeout).until(lambda _d: self.field_value("file_name") == expected_name)
             return True, self.field_value("file_name")
         except TimeoutException:
             return False, self.field_value("file_name")
@@ -813,47 +987,83 @@ class UploadPage(BasePage):
         self.click(self.wait.until(EC.element_to_be_clickable((By.ID, tab_id))))
         self.wait_for_ajax_idle(timeout=5)
 
+    def _library_rows(self) -> list[str]:
+        rows = self.driver.execute_script("""
+            var c = document.getElementById('watermark_commonly_used_files_container');
+            if (!c) return [];
+            return Array.from(c.querySelectorAll('.list-group-item')).map(function(item) {
+                var txt = (item.innerText || item.textContent || '').replace(/\\s+/g, ' ').trim();
+                var vals = Array.from(item.querySelectorAll("input[name='watermark_file_check']")).map(function(cb) {
+                    return cb.value || '';
+                });
+                return [txt].concat(vals).join(' ').trim();
+            });
+        """)
+        return rows if isinstance(rows, list) else []
+
+    def is_watermark_in_library(self, text: str) -> bool:
+        self.open_watermark_tab(self.WATERMARK_LIBRARY_TAB)
+        low = text.lower()
+        try:
+            WebDriverWait(self.driver, 10, ignored_exceptions=(StaleElementReferenceException,)).until(
+                lambda _d: any(low in r.lower() for r in self._library_rows())
+            )
+            return True
+        except TimeoutException:
+            return False
+
     def create_text_watermark(self, text: str) -> tuple[bool, str]:
         self.open_watermark_tab(self.WATERMARK_CUSTOM_TAB)
         box = self.wait.until(EC.visibility_of_element_located((By.ID, "watermark_text")))
         box.clear()
         box.send_keys(text)
         button = self.wait.until(EC.element_to_be_clickable((By.ID, "create_custom_text_watermark_button")))
-        return self.message_after(lambda: self.click(button))
+        ok, message = self.message_after(lambda: self.click(button))
+        if ok:
+            self._created_watermarks.append(text)
+        return ok, message
 
     def upload_watermark_file(self, path: str) -> tuple[bool, str]:
         self.open_watermark_tab(self.WATERMARK_UPLOAD_TAB)
         self.attach_to_file_input(path)
         button = self.wait.until(EC.element_to_be_clickable((By.ID, "submit-all")))
-        return self.message_after(lambda: self.click(button))
+        ok, message = self.message_after(lambda: self.click(button))
+        if ok:
+            stem = os.path.splitext(os.path.basename(path))[0]
+            self._created_watermarks.append(stem)
+        return ok, message
 
     def search_watermark_library(self, wanted: str, other: str) -> tuple[bool, str]:
         self.open_watermark_tab(self.WATERMARK_LIBRARY_TAB)
-        self.wait.until(
-            lambda d: wanted.lower() in d.find_element(*self.WATERMARK_LIBRARY_CONTAINER).text.lower()
+        WebDriverWait(self.driver, 10, ignored_exceptions=(StaleElementReferenceException,)).until(
+            lambda _d: any(wanted.lower() in r.lower() for r in self._library_rows())
         )
         box = self.wait.until(EC.element_to_be_clickable((By.ID, "watermark_files_search_box")))
         self.click(box)
         box.clear()
-        for ch in wanted:
-            ActionChains(self.driver).send_keys(ch).perform()
-            time.sleep(0.05)
-        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
+        if len(wanted) > 1:
+            box.send_keys(wanted[:-1])
+            self.wait_for_ajax_idle(timeout=8)
+            box.send_keys(wanted[-1])
+        else:
+            box.send_keys(wanted)
+        self.wait_for_ajax_idle(timeout=8)
+
+        def _filtered(_d) -> bool:
+            rows = self._library_rows()
+            return (
+                bool(rows)
+                and all(wanted.lower() in r.lower() for r in rows)
+                and not any(other.lower() in r.lower() for r in rows)
+            )
 
         try:
-            WebDriverWait(self.driver, 10).until(
-                lambda d: (
-                    wanted.lower() in d.find_element(*self.WATERMARK_LIBRARY_CONTAINER).text.lower()
-                    and other.lower() not in d.find_element(*self.WATERMARK_LIBRARY_CONTAINER).text.lower()
-                )
-            )
+            WebDriverWait(self.driver, 10, ignored_exceptions=(StaleElementReferenceException,)).until(_filtered)
+            rows = self._library_rows()
+            return True, f"Search for '{wanted}' shows {len(rows)} matching row(s) and excludes '{other}'"
         except TimeoutException:
-            pass
-
-        shown = self.driver.find_element(*self.WATERMARK_LIBRARY_CONTAINER).text.lower()
-        if wanted.lower() in shown and other.lower() not in shown:
-            return True, f"Search for '{wanted}' shows only that watermark"
-        return False, f"Search for '{wanted}' shows: {' '.join(shown.split())[:100] or 'nothing'}"
+            rows = self._library_rows()
+            return False, f"Search for '{wanted}' showed non-matching rows: {rows[:5]}"
 
     def attach_watermark_from_library(self, text: str) -> str:
         self.open_watermark_tab(self.WATERMARK_LIBRARY_TAB)
@@ -881,7 +1091,8 @@ class UploadPage(BasePage):
         def _delete_it():
             icons = WebDriverWait(self.driver, 10).until(lambda _d: container.find_elements(By.XPATH, icon_xpath))
             self.click(icons[0])
-            self.confirm("yes")
+            if not (self.confirm("delete") or self.confirm("yes")):
+                raise AssertionError("Watermark delete confirmation modal did not appear")
 
         ok, message = self.message_after(_delete_it)
         if not ok:
@@ -889,9 +1100,52 @@ class UploadPage(BasePage):
 
         try:
             WebDriverWait(self.driver, 8).until(
-                lambda d: text.lower() not in d.find_element(*self.WATERMARK_LIBRARY_CONTAINER).text.lower()
+                lambda _d: not any(text.lower() in r.lower() for r in self._library_rows())
             )
             gone = True
         except TimeoutException:
             gone = False
+        if gone:
+            self._created_watermarks = [w for w in self._created_watermarks if text.lower() not in w.lower()]
         return gone, f"{message}. Watermark " + ("removed from the library" if gone else "still shown in the library")
+
+    def cleanup_created_watermarks(self) -> None:
+        if not self._created_watermarks:
+            return
+        targets = list(dict.fromkeys(self._created_watermarks))
+        self._created_watermarks.clear()
+        if not (self.driver.current_url or "").startswith(cfg.BASE_URL):
+            self.driver.get(cfg.PENDING_URL)
+        self.driver.set_script_timeout(20)
+        errors = self.driver.execute_async_script("""
+            var cb = arguments[arguments.length - 1];
+            var targets = arguments[0].map(s => String(s).toLowerCase());
+            function getCookie(n) {
+                var m = document.cookie.match(new RegExp('(?:^|; )' + n + '=([^;]*)'));
+                return m ? decodeURIComponent(m[1]) : '';
+            }
+            var csrf = (document.querySelector('input[name="csrfmiddlewaretoken"]') || {}).value || getCookie('csrftoken') || '';
+            (async () => {
+                var errs = [];
+                try {
+                    for (var acc of [0, 1]) {
+                        var res = await fetch('/api/v1/dms/documents/document_watermark/?accessible_by=' + acc);
+                        if (!res.ok) continue;
+                        var list = await res.json();
+                        for (var item of (Array.isArray(list) ? list : [])) {
+                            var blob = [item.file || '', item.custom_watermark_text || '', item.name || ''].join(' ').toLowerCase();
+                            if (targets.some(t => blob.indexOf(t) !== -1)) {
+                                var delRes = await fetch('/api/v1/dms/documents/document_watermark/' + item.id + '/', {
+                                    method: 'DELETE',
+                                    headers: {'X-CSRFToken': csrf}
+                                });
+                                if (!delRes.ok) errs.push(item.id + ': HTTP ' + delRes.status);
+                            }
+                        }
+                    }
+                } catch (e) { errs.push(String(e)); }
+                cb(errs);
+            })();
+        """, targets)
+        if errors:
+            print(f"   [Warning] watermark cleanup errors: {errors}")

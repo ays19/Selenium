@@ -25,11 +25,8 @@ def notify_off(session: c.DmsSession) -> tuple[bool, str]:
 
     ok, message = session.categorization.toggle_notify(name, "off")
     off = not session.categorization.is_notify_on(name)
-    passed = off and ok is not False
-    return passed, (
-        f"{message} ({name}). Notify is " + ("off" if off else "STILL on")
-        + ". The missing notification is not checked by the script"
-    )
+    passed = bool(ok) and off
+    return passed, f"{message} ({name}). Notify is " + ("off" if off else "STILL on")
 
 
 SCENARIOS = [("Notify off", notify_off)]

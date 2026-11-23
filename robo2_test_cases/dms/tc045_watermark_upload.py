@@ -19,7 +19,14 @@ def upload_watermark(session: c.DmsSession) -> tuple[bool, str]:
     sample = session.upload.find_sample_file("png")
     if not sample:
         raise c.SetupError(f"no .png sample file in {c.SAMPLE_DIR}")
-    return session.upload.upload_watermark_file(sample[1])
+    copy_name, copy_path = session.upload.unique_copy(sample[1])
+    ok, message = session.upload.upload_watermark_file(copy_path)
+    if not ok:
+        return False, message
+    stem = copy_name.rsplit(".", 1)[0]
+    if not session.upload.is_watermark_in_library(stem):
+        return False, f"Uploaded watermark '{stem}' did not appear in library ({message})"
+    return True, f"{message} ('{stem}' verified in watermark library)"
 
 
 SCENARIOS = [("Upload watermark", upload_watermark)]

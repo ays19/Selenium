@@ -15,9 +15,9 @@ def permitted_only(session: c.DmsSession) -> tuple[bool, str]:
     visible_type = os.getenv("OTHER_USER_VISIBLE_DOC_TYPE", "").strip()
     hidden_type = os.getenv("OTHER_USER_HIDDEN_DOC_TYPE", "").strip()
 
-    text = session.as_other_user(session.explorer.load_explorer_text)
-    sees_visible = visible_type.lower() in text
-    sees_hidden = hidden_type.lower() in text
+    names = [n.lower() for n in session.as_other_user(session.explorer.load_explorer_tree_names)]
+    sees_visible = visible_type.lower() in names
+    sees_hidden = hidden_type.lower() in names
     ok = sees_visible and not sees_hidden
     return ok, (
         f"General user sees '{visible_type}': {'yes' if sees_visible else 'NO'}. "

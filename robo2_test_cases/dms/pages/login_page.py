@@ -114,6 +114,8 @@ class LoginPage(BasePage):
         p2 = other_pass or cfg.OTHER_PASSWORD
         if not (u2 and p2):
             raise LoginError("OTHER_USERNAME and OTHER_PASSWORD must be set in .env.")
+        if u2.strip().lower() == (primary_user or "").strip().lower():
+            return function()
 
         self.logout()
         try:

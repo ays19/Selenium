@@ -27,9 +27,14 @@ def watermark_document(session: c.DmsSession) -> tuple[bool, str]:
     if not selected:
         return False, "watermark was not attached to the document (no watermark name shown)"
 
-    session.upload.set_document_name(datetime.now().strftime("AUTO_%H%M%S"))
+    doc_name = datetime.now().strftime("AUTO_WM_%H%M%S")
+    session.upload.set_document_name(doc_name)
     ok, message = session.upload.click_save_upload()
-    return ok, f"Watermark '{selected}' attached. Upload message: {' '.join(message.split())}"
+    if not ok:
+        return False, message
+    if not session.explorer.search_finds(doc_name, tries=5):
+        return False, f"Watermarked document '{doc_name}' uploaded ('{message}') but not found in Quick Search"
+    return True, f"Watermark '{selected}' attached; '{doc_name}' uploaded ({' '.join(message.split())}) and found in Quick Search"
 
 
 SCENARIOS = [("Document watermark", watermark_document)]
