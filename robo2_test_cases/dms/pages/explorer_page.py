@@ -674,25 +674,35 @@ class ExplorerPage(BasePage):
         box.clear()
         box.send_keys(query)
         self.driver.execute_script("$('#content-search').trigger('change');")
+        time.sleep(0.5)
+        self.wait_for_ajax_idle(timeout=10)
 
         try:
-            WebDriverWait(self.driver, 15).until(
-                lambda _d: self.visible("#main-window .no_cat_doc_selected_div")
+            WebDriverWait(
+                self.driver,
+                15,
+                ignored_exceptions=(StaleElementReferenceException,),
+            ).until(
+                lambda _d: bool(self.visible("#main-window .no_cat_doc_selected_div"))
                 or bool(self.visible("#explorer_file_list_view tbody tr, #main-window .file-thumb"))
             )
         except TimeoutException:
             pass
         self.wait_for_ajax_idle(timeout=6)
 
-        if self.visible("#main-window .no_cat_doc_selected_div"):
+        rows = self.driver.execute_script("""
+            var empty = document.querySelector('#main-window .no_cat_doc_selected_div');
+            if (empty && empty.offsetParent !== null) return null;
+            var out = [];
+            document.querySelectorAll('#explorer_file_list_view tbody tr, #main-window .file-thumb .c-info').forEach(function(el) {
+                if (el.offsetParent === null) return;
+                var txt = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+                if (txt) out.push(txt);
+            });
+            return out;
+        """)
+        if rows is None:
             return False, []
-        rows = [
-            " ".join(el.text.split())
-            for el in self.driver.find_elements(
-                By.CSS_SELECTOR, "#explorer_file_list_view tbody tr, #main-window .file-thumb .c-info"
-            )
-            if el.is_displayed()
-        ]
         found = any(expected_name.lower() in r.lower() for r in rows)
         return found, rows
 
