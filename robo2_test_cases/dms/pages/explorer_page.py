@@ -368,7 +368,9 @@ class ExplorerPage(BasePage):
         else:
             self.driver.execute_script("arguments[0].click();", box)
 
-    def download_multiple_from_advanced_search(self, doc_type: str) -> tuple[bool, str]:
+    def download_multiple_from_advanced_search(self, doc_type: str | None = None) -> tuple[bool, str]:
+        target_doc_type = (doc_type or cfg.DOC_TYPE_SEARCH_TERMS[0]).strip()
+
         self.driver.get(cfg.REQUESTED_DOWNLOAD_URL)
         self.wait_for_page_load()
         self.wait_for_ajax_idle(timeout=5)
@@ -378,10 +380,10 @@ class ExplorerPage(BasePage):
         }
 
         self.driver.get(cfg.EXPLORER_URL)
-        self.advanced_search("", doc_type=doc_type)
+        self.advanced_search("", doc_type=target_doc_type)
 
         if "no search result found" in self.body_text():
-            return False, f"advanced search found no document for doc type '{doc_type}'"
+            return False, f"advanced search found no document for doc type '{target_doc_type}'"
         boxes = self._result_checkboxes()
         if len(boxes) < 2:
             return False, f"document check boxes not found in the search result (found {len(boxes)})"
@@ -395,9 +397,17 @@ class ExplorerPage(BasePage):
         self.wait_for_ajax_idle(timeout=5)
         self.driver.get(cfg.REQUESTED_DOWNLOAD_URL)
         self.wait_for_page_load()
+        self.wait_for_ajax_idle(timeout=5)
+
+        attempts = 0
 
         def _find_new_link(d):
-            self.wait_for_ajax_idle(timeout=2)
+            nonlocal attempts
+            if attempts > 0:
+                d.refresh()
+                self.wait_for_page_load()
+                self.wait_for_ajax_idle(timeout=5)
+            attempts += 1
             links = self.visible("#requested_downloads tbody a[href]")
             for ln in links:
                 if ln.get_attribute("href") not in existing_hrefs:
@@ -405,7 +415,7 @@ class ExplorerPage(BasePage):
             return links[0] if links and not existing_hrefs else None
 
         try:
-            dl_link = WebDriverWait(self.driver, 25, poll_frequency=2).until(_find_new_link)
+            dl_link = WebDriverWait(self.driver, 45, poll_frequency=4).until(_find_new_link)
         except TimeoutException:
             return False, "no new download link appeared on Requested Downloads page"
 
@@ -690,21 +700,42 @@ class ExplorerPage(BasePage):
             pass
         self.wait_for_ajax_idle(timeout=6)
 
-        rows = self.driver.execute_script("""
-            var empty = document.querySelector('#main-window .no_cat_doc_selected_div');
-            if (empty && empty.offsetParent !== null) return null;
-            var out = [];
-            document.querySelectorAll('#explorer_file_list_view tbody tr, #main-window .file-thumb .c-info').forEach(function(el) {
-                if (el.offsetParent === null) return;
-                var txt = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-                if (txt) out.push(txt);
-            });
-            return out;
-        """)
-        if rows is None:
-            return False, []
-        found = any(expected_name.lower() in r.lower() for r in rows)
-        return found, rows
+        def _visible_rows():
+            return self.driver.execute_script("""
+                var empty = document.querySelector('#main-window .no_cat_doc_selected_div');
+                if (empty && empty.offsetParent !== null) return null;
+                var out = [];
+                document.querySelectorAll('#explorer_file_list_view tbody tr, #main-window .file-thumb .c-info').forEach(function(el) {
+                    if (el.offsetParent === null) return;
+                    var txt = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+                    if (txt) out.push(txt);
+                });
+                return out;
+            """)
+
+        all_rows: list[str] = []
+        for page in range(1, 21):
+            rows = _visible_rows()
+            if rows is None:
+                return False, []
+            all_rows.extend(rows)
+            if any(expected_name.lower() in r.lower() for r in rows):
+                return True, all_rows
+            if page >= 20:
+                break
+            next_btns = [b for b in self.driver.find_elements(By.CSS_SELECTOR, self.NEXT_PAGE_CSS) if b.is_displayed()]
+            if not next_btns:
+                break
+            prev_sig = "|".join(rows)
+            self.click(next_btns[0])
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    lambda _d: "|".join(_visible_rows() or []) != prev_sig
+                )
+            except TimeoutException:
+                break
+            self.wait_for_ajax_idle(timeout=4)
+        return False, all_rows
 
     def open_doc_type_tree(self, path: str) -> None:
         if not self._navigate_tree_node(path):

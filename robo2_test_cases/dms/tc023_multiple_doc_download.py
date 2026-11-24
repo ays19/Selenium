@@ -15,9 +15,7 @@ TEST_CASE_ID = "DMS-TC023"
 
 
 def multiple_download(session: c.DmsSession) -> tuple[bool, str]:
-    session.upload_document("pdf")
-    first = session.upload_document("txt")
-    return session.explorer.download_multiple_from_advanced_search(first["doc_type"])
+    return session.explorer.download_multiple_from_advanced_search()
 
 
 SCENARIOS = [("Multiple download", multiple_download)]
