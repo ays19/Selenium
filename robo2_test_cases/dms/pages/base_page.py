@@ -38,7 +38,7 @@ class BasePage:
         "#add_meta_data > #loaderOverlay, #search_modal .loader, #loading, .metadata-overlay",
     )
     MESSAGE_BOX = (
-        ".toast, .alert, .swal2-popup, [role='alert'], .snackbar, .Toastify__toast, "
+        ".toast, .alert, .swal2-popup, .swal2-modal, [role='alert'], .snackbar, .Toastify__toast, "
         ".mat-snack-bar-container, .ant-message, .growl-animated, [data-notify], [data-growl='container']"
     )
     SUCCESS_WORDS = (
@@ -312,29 +312,79 @@ class BasePage:
                 return True, text
         return None
 
+    @staticmethod
+    def _is_swal_prompt(elem) -> bool:
+        return any(
+            el.is_displayed()
+            for el in elem.find_elements(By.CSS_SELECTOR, ".swal2-cancel, .swal2-question")
+        )
+
     def _visible_message_boxes(self, d=None) -> list[tuple[bool, bool, str]]:
         drv = d or self.driver
         boxes = []
         for elem in drv.find_elements(By.CSS_SELECTOR, self.MESSAGE_BOX):
             try:
-                if elem.is_displayed():
+                if not elem.is_displayed():
+                    continue
+                cls = (elem.get_attribute("class") or "").lower()
+                is_swal = ("swal2-modal" in cls) or ("swal2-popup" in cls)
+                if is_swal:
+                    if self._is_swal_prompt(elem):
+                        continue
+                    parts = [
+                        part.text.strip()
+                        for part in elem.find_elements(
+                            By.CSS_SELECTOR, "h2, .swal2-title, .swal2-content, #swal2-content"
+                        )
+                        if part.is_displayed() and part.text.strip()
+                    ]
+                    txt = " ".join(parts) if parts else elem.text.strip()
+                else:
                     txt = elem.text.strip()
-                    if txt:
-                        cls = (elem.get_attribute("class") or "").lower()
-                        is_danger = any(
-                            c in cls for c in ("alert-danger", "toast-error", "has-error", "alert-warning", "toast-warning")
-                        ) or any(
-                            ic.is_displayed() for ic in elem.find_elements(By.CSS_SELECTOR, ".swal2-error, .swal2-warning")
-                        )
-                        is_success_cls = any(
-                            c in cls for c in ("alert-success", "toast-success", "has-success")
-                        ) or any(
-                            ic.is_displayed() for ic in elem.find_elements(By.CSS_SELECTOR, ".swal2-success")
-                        )
-                        boxes.append((is_danger, is_success_cls, txt))
+                if not txt:
+                    continue
+                is_danger = any(
+                    c in cls for c in ("alert-danger", "toast-error", "has-error", "alert-warning", "toast-warning")
+                ) or any(
+                    ic.is_displayed() for ic in elem.find_elements(By.CSS_SELECTOR, ".swal2-error, .swal2-warning")
+                )
+                is_success_cls = any(
+                    c in cls for c in ("alert-success", "toast-success", "has-success")
+                ) or any(
+                    ic.is_displayed() for ic in elem.find_elements(By.CSS_SELECTOR, ".swal2-success")
+                )
+                boxes.append((is_danger, is_success_cls, txt))
             except StaleElementReferenceException:
                 continue
         return boxes
+
+    def _dismiss_result_swal(self) -> None:
+        """Close non-confirmation SweetAlert result modals so subsequent clicks aren't blocked."""
+        for modal in self.driver.find_elements(By.CSS_SELECTOR, ".swal2-modal, .swal2-popup"):
+            try:
+                if not modal.is_displayed() or self._is_swal_prompt(modal):
+                    continue
+                ok_btns = [
+                    b for b in modal.find_elements(By.CSS_SELECTOR, ".swal2-confirm")
+                    if b.is_displayed()
+                ]
+                if not ok_btns:
+                    continue
+                self.click(ok_btns[0])
+                WebDriverWait(
+                    self.driver,
+                    4,
+                    ignored_exceptions=(NoSuchElementException, StaleElementReferenceException),
+                ).until(
+                    lambda d: not any(
+                        m.is_displayed() and not self._is_swal_prompt(m)
+                        for m in d.find_elements(By.CSS_SELECTOR, ".swal2-modal, .swal2-popup")
+                    )
+                )
+                self.wait_for_page_load()
+                self.wait_for_ajax_idle(timeout=5)
+            except (TimeoutException, StaleElementReferenceException, NoSuchElementException):
+                pass
 
     def wait_for_message(
         self,
@@ -409,6 +459,7 @@ class BasePage:
         boxes_before = {txt for _, _, txt in self._visible_message_boxes()}
         action()
         ok, message = self.wait_for_message("", seconds=seconds, boxes_before=boxes_before)
+        self._dismiss_result_swal()
         message = re.sub(r"<[^>]+>", " ", message)
         message = re.sub(r"^[×x]?\s*close\s*", "", " ".join(message.split()), flags=re.I)
         return ok, message

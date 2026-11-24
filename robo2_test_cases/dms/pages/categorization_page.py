@@ -5,7 +5,7 @@ from datetime import datetime
 import re
 import time
 
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -327,7 +327,11 @@ class CategorizationPage(BasePage):
             f"[td[1][normalize-space(.)={q} or starts-with(normalize-space(.), concat({q}, ' ('))]]"
         )
         try:
-            WebDriverWait(self.driver, 8).until(
+            WebDriverWait(
+                self.driver,
+                8,
+                ignored_exceptions=(StaleElementReferenceException,),
+            ).until(
                 lambda d: not any(e.is_displayed() for e in d.find_elements(By.XPATH, xp))
             )
             gone = True
