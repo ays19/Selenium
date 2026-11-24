@@ -380,15 +380,30 @@ class UploadPage(BasePage):
             WebDriverWait(self.driver, 8).until(lambda _d, n=idx + 1: self.selected_count() >= n)
 
     def _find_grid_view_icon(self, ext: str):
-        target_suffix = "." + ext.lower()
-        for card in self.driver.find_elements(*self.PENDING_ITEM):
-            if not card.is_displayed():
-                continue
-            doc_name = (card.get_attribute("data-pending-doc-name") or "").strip().lower()
-            if doc_name.endswith(target_suffix):
-                icons = [i for i in card.find_elements(By.CSS_SELECTOR, ".view-item") if i.is_displayed()]
-                if icons:
-                    return icons[0]
+        icon = self.driver.execute_script(
+            """
+            function vis(el) {
+                return !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+            }
+            var suffix = '.' + String(arguments[0] || '').toLowerCase();
+            var cards = document.querySelectorAll('#grid_view_container .pending-meta');
+            if (!cards.length) cards = document.querySelectorAll('.pending-meta');
+            for (var i = 0; i < cards.length; i++) {
+                var card = cards[i];
+                if (!vis(card)) continue;
+                var name = (card.getAttribute('data-pending-doc-name') || '').trim().toLowerCase();
+                if (!name.endsWith(suffix)) continue;
+                var icons = card.querySelectorAll('.view-item');
+                for (var j = 0; j < icons.length; j++) {
+                    if (vis(icons[j])) return icons[j];
+                }
+            }
+            return null;
+            """,
+            ext,
+        )
+        if icon is not None:
+            return icon
         raise LookupError(f"no visible .{ext} card with view icon")
 
     def _locate_view_icon_across_pages(self, ext: str):
@@ -398,6 +413,13 @@ class UploadPage(BasePage):
             except Exception:
                 if not self.pending_next_page():
                     break
+                if not self.visible("#grid_view_container"):
+                    btns = self.driver.find_elements(*self.GRID_VIEW_BTN)
+                    if btns:
+                        self.click(btns[0])
+                        WebDriverWait(self.driver, 5, poll_frequency=0.1).until(
+                            lambda _d: bool(self.visible("#grid_view_container"))
+                        )
         return None
 
     def _preview_result(self, old_tabs: list[str], ext: str) -> str | None:
@@ -409,36 +431,61 @@ class UploadPage(BasePage):
                 return "preview opened in new tab"
             return None
 
-        modals = self.visible("#viewFiles")
-        if modals:
-            has_media = any(
-                el.is_displayed()
-                for el in modals[0].find_elements(
-                    By.CSS_SELECTOR,
-                    "#file_container iframe[src], #file_container img[src], "
-                    "#file_container audio[src], #file_container video[src], "
-                    "#file_container object[data], .temp-modal-preview table.preview-table",
-                )
-            )
-            if has_media:
-                return "preview opened"
-            fc_text = " ".join(
-                (el.text or "").lower()
-                for el in modals[0].find_elements(By.CSS_SELECTOR, "#file_container")
-            )
-            if "preview" in fc_text and any(w in fc_text for w in ("not available", "unavailable", "not supported")):
-                return "'Preview Not Available!' message shown"
-        return None
+        return self.driver.execute_script(
+            """
+            function vis(el) {
+                return !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+            }
+            if (window.jQuery && window.jQuery.active > 0) return null;
+            var vf = document.getElementById('viewFiles');
+            if (!vis(vf)) return null;
+            var loaders = vf.querySelectorAll('.loading-spinner, .loader, #loading');
+            for (var k = 0; k < loaders.length; k++) {
+                if (vis(loaders[k])) return null;
+            }
+            var media = vf.querySelectorAll(
+                '#file_container iframe[src], #file_container img[src], ' +
+                '#file_container audio[src], #file_container video[src], ' +
+                '#file_container object[data], .temp-modal-preview table.preview-table'
+            );
+            for (var i = 0; i < media.length; i++) {
+                if (vis(media[i])) return 'preview opened';
+            }
+            var fc = document.getElementById('file_container');
+            var txt = (fc ? (fc.innerText || fc.textContent || '') : '').toLowerCase();
+            if (txt.indexOf('preview') !== -1 && (
+                txt.indexOf('not available') !== -1 ||
+                txt.indexOf('unavailable') !== -1 ||
+                txt.indexOf('not supported') !== -1
+            )) {
+                return "'Preview Not Available!' message shown";
+            }
+            return null;
+            """
+        )
+
+    def _is_pending_grid_open(self) -> bool:
+        cur = (self.driver.current_url or "").split("?")[0].split("#")[0].rstrip("/")
+        want = cfg.PENDING_URL.rstrip("/")
+        return cur == want and bool(self.visible("#grid_view_container"))
 
     def _open_pending_grid_view(self) -> bool:
         self.driver.get(cfg.PENDING_URL)
         self.wait.until(EC.presence_of_element_located(self.LIST_CONTAINER))
         try:
             self.wait.until(EC.element_to_be_clickable(self.GRID_VIEW_BTN)).click()
-            WebDriverWait(self.driver, 10).until(lambda _d: bool(self.visible("#grid_view_container")))
-            WebDriverWait(self.driver, 10).until(
-                lambda d: bool([el for el in d.find_elements(*self.PENDING_ITEM) if el.is_displayed()])
-                or bool(d.find_elements(By.CSS_SELECTOR, ".nothingPending"))
+            WebDriverWait(self.driver, 10, poll_frequency=0.1).until(
+                lambda _d: bool(self.visible("#grid_view_container"))
+            )
+            WebDriverWait(self.driver, 10, poll_frequency=0.1).until(
+                lambda d: bool(
+                    d.execute_script(
+                        "function vis(el) { return !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden'); }"
+                        "var els = document.querySelectorAll('#grid_view_container .pending-meta');"
+                        "for (var i = 0; i < els.length; i++) { if (vis(els[i])) return true; }"
+                        "return !!document.querySelector('.nothingPending');"
+                    )
+                )
             )
             self.wait_for_ajax_idle(timeout=5)
             return True
@@ -447,10 +494,23 @@ class UploadPage(BasePage):
 
     def view_pending_document(self, ext: str) -> tuple[bool, str]:
         """Switch Pending Documents to Grid View, preview a `.ext` file, and close the preview."""
-        if not self._open_pending_grid_view():
+        reused_grid = self._is_pending_grid_open()
+        if not reused_grid and not self._open_pending_grid_view():
             return False, "Grid View icon not found"
 
-        icon = self._locate_view_icon_across_pages(ext)
+        icon = None
+        if reused_grid:
+            try:
+                icon = self._find_grid_view_icon(ext)
+            except LookupError:
+                shown, _ = self.pending_page_info()
+                if shown and not re.match(r"^1\s*-", shown):
+                    if not self._open_pending_grid_view():
+                        return False, "Grid View icon not found"
+                icon = self._locate_view_icon_across_pages(ext)
+        else:
+            icon = self._locate_view_icon_across_pages(ext)
+
         if icon is None:
             sample = self.find_sample_file(ext)
             if sample:
@@ -465,23 +525,54 @@ class UploadPage(BasePage):
         old_tabs = list(self.driver.window_handles)
         try:
             self.click(icon)
-            result = WebDriverWait(self.driver, 12).until(lambda _d: self._preview_result(old_tabs, ext))
+            result = WebDriverWait(self.driver, 12, poll_frequency=0.1).until(
+                lambda _d: self._preview_result(old_tabs, ext)
+            )
         except Exception:
             return False, f"no preview content loaded after clicking view icon for .{ext}"
 
         if len(self.driver.window_handles) > len(old_tabs):
             self.close_extra_tabs(old_tabs[0])
         else:
-            close_btns = self.visible("#viewFiles button.close, #viewFiles [data-dismiss='modal']")
-            if close_btns:
-                self.click(close_btns[0])
-            else:
-                self.driver.switch_to.active_element.send_keys(Keys.ESCAPE)
-            try:
-                WebDriverWait(self.driver, 5).until(EC.invisibility_of_element_located(self.VIEW_MODAL))
-            except TimeoutException:
-                pass
+            self._close_preview_modal()
         return True, result
+
+    def _close_preview_modal(self) -> None:
+        def _closed(d) -> bool:
+            return bool(
+                d.execute_script(
+                    """
+                    function vis(el) {
+                        return !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+                    }
+                    var vf = document.getElementById('viewFiles');
+                    var backdrops = document.querySelectorAll('.modal-backdrop');
+                    var anyBackdrop = false;
+                    for (var i = 0; i < backdrops.length; i++) {
+                        if (vis(backdrops[i])) { anyBackdrop = true; break; }
+                    }
+                    if (!vis(vf) && !anyBackdrop) return true;
+                    if (vis(vf)) {
+                        var jq = window.jQuery;
+                        var m = jq ? jq(vf).data('bs.modal') : null;
+                        if (!m || (!m.isTransitioning && !m._isTransitioning)) {
+                            var btn = vf.querySelector("button.close, [data-dismiss='modal']");
+                            if (btn) btn.click();
+                            else if (jq && jq.fn && jq.fn.modal) jq(vf).modal('hide');
+                        }
+                    }
+                    return false;
+                    """
+                )
+            )
+
+        try:
+            WebDriverWait(self.driver, 5, poll_frequency=0.1).until(_closed)
+        except TimeoutException:
+            try:
+                self.driver.switch_to.active_element.send_keys(Keys.ESCAPE)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Document Type, Metadata & Upload
