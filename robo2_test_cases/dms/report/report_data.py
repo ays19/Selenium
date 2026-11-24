@@ -157,6 +157,11 @@ REPORT_FILTERS: dict[str, dict] = {
         },
         "expected": "Pending",
     },
+    "auto_approval": {
+        # Dynamic fields (Project, App Number, User) are read from the loaded table row.
+        "filters": {"User": ""},
+        "expected": "",
+    },
 }
 
 
