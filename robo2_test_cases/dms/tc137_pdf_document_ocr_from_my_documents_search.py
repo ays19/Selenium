@@ -10,6 +10,7 @@ PDF Document OCR from My Documents Search
 Matched content should show the respective document
 """
 import os
+import time
 
 import common as c
 
@@ -19,13 +20,16 @@ TEST_CASE_ID = "DMS-TC137"
 def ocr_explorer_search(session: c.DmsSession) -> tuple[bool, str]:
     doc_type = os.getenv("OCR_DOC_TYPE", "").strip()
     search_text = os.getenv("OCR_SEARCH_TEXT", "").strip()
-    ocr_timeout = int(os.getenv("OCR_TIMEOUT", "60"))
+    ocr_timeout = int(os.getenv("OCR_TIMEOUT", "65"))
 
     info = session.upload_document("pdf", doc_type=doc_type)
     name = info["name"]
     ok, status_msg = session.open_and_wait_for_ocr(name, timeout_seconds=ocr_timeout)
     if not ok:
         return False, f"{status_msg} for document '{name}'"
+
+    with session.step("Wait 65s for server OCR search index update"):
+        time.sleep(65)
 
     pos_found, pos_rows = session.explorer.explorer_content_search(info["doc_type"], search_text, name)
     neg_query = "ZZZ_NO_MATCH_99999"

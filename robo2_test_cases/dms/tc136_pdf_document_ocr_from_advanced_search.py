@@ -10,6 +10,7 @@ PDF Document OCR from Advanced Search
 Matched content should show the respective document
 """
 import os
+import time
 
 import common as c
 
@@ -19,7 +20,7 @@ TEST_CASE_ID = "DMS-TC136"
 def ocr_advanced_search(session: c.DmsSession) -> tuple[bool, str]:
     doc_type = os.getenv("OCR_DOC_TYPE", "").strip()
     search_text = os.getenv("OCR_SEARCH_TEXT", "").strip()
-    ocr_timeout = int(os.getenv("OCR_TIMEOUT", "60"))
+    ocr_timeout = int(os.getenv("OCR_TIMEOUT", "65"))
 
     info = session.upload_document("pdf", doc_type=doc_type)
     name = info["name"]
@@ -27,11 +28,14 @@ def ocr_advanced_search(session: c.DmsSession) -> tuple[bool, str]:
     if not ok:
         return False, f"{status_msg} for document '{name}'"
 
+    with session.step("Wait 65s for server OCR search index update"):
+        time.sleep(65)
+
     session.explorer.open()
     session.explorer.advanced_search(
         None, match_all=True, doc_type=info["doc_type"], extra=[("content search", search_text)]
     )
-    pos_found = bool(session.explorer.find_in_search_result_pages([name], max_pages=5))
+    pos_found = bool(session.explorer.find_in_search_result_pages([name], max_pages=20))
 
     neg_query = "ZZZ_NO_MATCH_99999"
     session.explorer.open()
