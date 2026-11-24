@@ -189,6 +189,10 @@ def build():
     if core_dir.exists():
         pyinstaller_cmd.append(f"--add-data={core_dir}{os.pathsep}core")
 
+    report_dir = ROOT / "report"
+    if report_dir.exists():
+        pyinstaller_cmd.append(f"--add-data={report_dir}{os.pathsep}report")
+
     assets_dir = ROOT / "assets"
     if assets_dir.exists():
         pyinstaller_cmd.append(f"--add-data={assets_dir}{os.pathsep}assets")
@@ -228,6 +232,14 @@ def build():
     if core_dir.exists():
         shutil.copytree(
             core_dir, target_folder / "core", dirs_exist_ok=True
+        )
+
+    if report_dir.exists():
+        shutil.copytree(
+            report_dir,
+            target_folder / "report",
+            ignore=shutil.ignore_patterns("__pycache__", "logs", "*.pyc"),
+            dirs_exist_ok=True,
         )
 
     if assets_dir.exists():

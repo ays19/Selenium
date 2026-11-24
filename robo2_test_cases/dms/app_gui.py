@@ -107,24 +107,38 @@ def run_as_worker():
                 sys.exit(1)
 
             script_dir = str(script_path.parent)
-            if script_dir not in sys.path:
-                sys.path.insert(0, script_dir)
+            rel_parent = Path(test_module_name).parent
 
-            # Ensure both _internal/core and dist/core are on sys.path
-            for base in [BUNDLE_DIR, APP_DIR]:
-                sub_dir = base / Path(test_module_name).parent
-                if sub_dir.exists() and str(sub_dir) not in sys.path:
-                    sys.path.insert(0, str(sub_dir))
+            # Ensure subfolder paths (e.g. report/, core/) precede root APP_DIR so
+            # local imports like `import common as c` resolve to the module's own common.py.
+            priority_dirs = []
+            for base in (BUNDLE_DIR, APP_DIR):
+                sub_dir = base / rel_parent
+                if sub_dir.exists():
+                    priority_dirs.append(str(sub_dir))
+            priority_dirs.append(script_dir)
+
+            for dir_path in priority_dirs:
+                while dir_path in sys.path:
+                    sys.path.remove(dir_path)
+                sys.path.insert(0, dir_path)
 
             os.chdir(script_dir)
 
-            # Load .env inside script directory without overwriting GUI's EXCEL_PATH/SHEET_NAME
-            env_file = Path(script_dir) / ".env"
-            if env_file.exists():
+            # Load .env and .env.report inside script directory without overwriting GUI's EXCEL_PATH/SHEET_NAME
+            env_candidates = []
+            for base_dir in dict.fromkeys([APP_DIR / rel_parent, Path(script_dir)]):
+                for env_name in (".env.report", ".env"):
+                    env_file = base_dir / env_name
+                    if env_file.is_file():
+                        env_candidates.append(env_file)
+
+            if env_candidates:
                 try:
                     from dotenv import load_dotenv
 
-                    load_dotenv(env_file, override=False)
+                    for env_file in env_candidates:
+                        load_dotenv(env_file, override=False)
                 except Exception:
                     pass
 
@@ -652,7 +666,529 @@ MODULES = {
     },
     "Report": {
         "sheet_name": "Report",
-        "tests": [],
+        "tests": [
+            # Core Login Report
+            (
+                "REP-TC001",
+                "report/rep001_core_login_report.py",
+                "Core Login Report (General User - Own Scope)",
+            ),
+            (
+                "REP-TC002",
+                "report/rep002_core_login_report.py",
+                "Core Login Report (Manager - All Users)",
+            ),
+            (
+                "REP-TC003",
+                "report/rep003_core_login_report.py",
+                "Core Login Report (Search by User & IP)",
+            ),
+            (
+                "REP-TC004",
+                "report/rep004_core_login_report.py",
+                "Core Login Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC005",
+                "report/rep005_export_print_copy_login_report.py",
+                "Core Login Report (Copy / CSV / Print)",
+            ),
+            # Core Activity Report
+            (
+                "REP-TC006",
+                "report/rep006_core_activity_report.py",
+                "Core Activity Report (General User - Own Scope)",
+            ),
+            (
+                "REP-TC007",
+                "report/rep007_core_activity_report.py",
+                "Core Activity Report (Manager - All Users)",
+            ),
+            (
+                "REP-TC008",
+                "report/rep008_core_activity_report.py",
+                "Core Activity Report (Verify Loaded Records)",
+            ),
+            (
+                "REP-TC009",
+                "report/rep009_core_activity_report.py",
+                "Core Activity Report (Search by User & Operation)",
+            ),
+            (
+                "REP-TC010",
+                "report/rep010_core_activity_report.py",
+                "Core Activity Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC011",
+                "report/rep011_core_activity_report.py",
+                "Core Activity Report (Column Sorting)",
+            ),
+            (
+                "REP-TC012",
+                "report/rep012_export_print_copy_login_report.py",
+                "Core Activity Report (Copy / CSV / Print)",
+            ),
+            # Core API Report
+            (
+                "REP-TC013",
+                "report/rep013_core_api_report.py",
+                "Core API Report (General User - Access Denied)",
+            ),
+            (
+                "REP-TC014",
+                "report/rep014_core_api_report.py",
+                "Core API Report (Manager - All API Logs)",
+            ),
+            (
+                "REP-TC015",
+                "report/rep015_core_api_report.py",
+                "Core API Report (Search by URL / IP / Method / Status)",
+            ),
+            (
+                "REP-TC016",
+                "report/rep016_core_api_report.py",
+                "Core API Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC017",
+                "report/rep017_download_api_report.py",
+                "Core API Report (Page Size & Copy / CSV / Print)",
+            ),
+            # DMS Activity Report
+            (
+                "REP-TC018",
+                "report/rep018_dms_activity_report.py",
+                "DMS Activity Report (General User - Own Scope)",
+            ),
+            (
+                "REP-TC019",
+                "report/rep019_dms_activity_report.py",
+                "DMS Activity Report (Manager - All Users)",
+            ),
+            (
+                "REP-TC020",
+                "report/rep020_dms_activity_report.py",
+                "DMS Activity Report (Search by User / Operation / IP)",
+            ),
+            (
+                "REP-TC021",
+                "report/rep021_dms_activity_report.py",
+                "DMS Activity Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC022",
+                "report/rep022_dms_activity_report.py",
+                "DMS Activity Report (Filter by Operation & User)",
+            ),
+            (
+                "REP-TC023",
+                "report/rep023_export_print_copy_dms_activity_report.py",
+                "DMS Activity Report (Copy / CSV / Excel / Print)",
+            ),
+            # Document Summary Report
+            (
+                "REP-TC024",
+                "report/rep024_document_summary_report.py",
+                "Document Summary Report (Admin / Permitted Access)",
+            ),
+            # Upload Record Report
+            (
+                "REP-TC025",
+                "report/rep025_upload_record_report.py",
+                "Upload Record Report (General User - Own Scope)",
+            ),
+            (
+                "REP-TC026",
+                "report/rep026_upload_record_report.py",
+                "Upload Record Report (Manager - All Users)",
+            ),
+            (
+                "REP-TC027",
+                "report/rep027_upload_record_report.py",
+                "Upload Record Report (Search by Uploader / Doc / Meta)",
+            ),
+            (
+                "REP-TC028",
+                "report/rep028_upload_record_report.py",
+                "Upload Record Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC029",
+                "report/rep029_upload_record_report.py",
+                "Upload Record Report (Filter by Document Type)",
+            ),
+            (
+                "REP-TC030",
+                "report/rep030_export_upload_record_report.py",
+                "Upload Record Report (Copy / CSV / Excel)",
+            ),
+            # Document Record Report
+            (
+                "REP-TC031",
+                "report/rep031_document_record_report.py",
+                "Document Record Report (General User - Group Scope)",
+            ),
+            (
+                "REP-TC032",
+                "report/rep032_document_record_report.py",
+                "Document Record Report (Manager - All Doc Types)",
+            ),
+            (
+                "REP-TC033",
+                "report/rep033_document_record_report.py",
+                "Document Record Report (Search by Uploader / Doc / Meta)",
+            ),
+            (
+                "REP-TC034",
+                "report/rep034_document_record_report.py",
+                "Document Record Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC035",
+                "report/rep035_document_record_report.py",
+                "Document Record Report (Filter by Document Type)",
+            ),
+            (
+                "REP-TC036",
+                "report/rep036_export_document_record_report.py",
+                "Document Record Report (Export Excel)",
+            ),
+            # Archived Document Record Report
+            (
+                "REP-TC037",
+                "report/rep037_archived_document_record_report.py",
+                "Archived Document Report (General User - Group Scope)",
+            ),
+            (
+                "REP-TC038",
+                "report/rep038_archived_document_record_report.py",
+                "Archived Document Report (Manager - All Doc Types)",
+            ),
+            (
+                "REP-TC039",
+                "report/rep039_archived_document_record_report.py",
+                "Archived Document Report (Search by Uploader / Doc / Meta)",
+            ),
+            (
+                "REP-TC040",
+                "report/rep040_archived_document_record_report.py",
+                "Archived Document Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC041",
+                "report/rep041_archived_document_record_report.py",
+                "Archived Document Report (Filter by Document Type)",
+            ),
+            (
+                "REP-TC042",
+                "report/rep042_export_archived_document_record_report.py",
+                "Archived Document Report (Export Excel)",
+            ),
+            # Document Type (Accessibility) Report
+            (
+                "REP-TC043",
+                "report/rep043_document_type_accessibility_report.py",
+                "Document Type Report (General User - Own Scope)",
+            ),
+            (
+                "REP-TC044",
+                "report/rep044_document_type_accessibility_report.py",
+                "Document Type Report (Manager - All Users)",
+            ),
+            (
+                "REP-TC045",
+                "report/rep045_document_type_accessibility_report.py",
+                "Document Type Report (Search by Type / Group / Path)",
+            ),
+            (
+                "REP-TC047",
+                "report/rep047_document_type_accessibility_report.py",
+                "Document Type Report (Filter by Users)",
+            ),
+            (
+                "REP-TC048",
+                "report/rep048_export_document_type_accessibility_report.py",
+                "Document Type Report (Export Excel)",
+            ),
+            # Page Count Report
+            (
+                "REP-TC049",
+                "report/rep049_page_count_report.py",
+                "Page Count Report (General User - Permitted Scope)",
+            ),
+            (
+                "REP-TC050",
+                "report/rep050_page_count_report.py",
+                "Page Count Report (Manager - All Doc Types & Columns)",
+            ),
+            (
+                "REP-TC051",
+                "report/rep051_page_count_report.py",
+                "Page Count Report (Search by Document Type)",
+            ),
+            (
+                "REP-TC052",
+                "report/rep052_page_count_report.py",
+                "Page Count Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC053",
+                "report/rep053_page_count_report.py",
+                "Page Count Report (Filter by Document Type)",
+            ),
+            (
+                "REP-TC054",
+                "report/rep054_export_print_copy_page_count_report.py",
+                "Page Count Report (Copy / CSV / Print)",
+            ),
+            # KPI Report
+            (
+                "REP-TC055",
+                "report/rep055_kpi_report.py",
+                "KPI Report (Unassigned User - Own Scope)",
+            ),
+            (
+                "REP-TC056",
+                "report/rep056_kpi_report.py",
+                "KPI Report (Admin - All Users)",
+            ),
+            (
+                "REP-TC057",
+                "report/rep057_kpi_report.py",
+                "KPI Report (Department Manager / HOD Scope)",
+            ),
+            (
+                "REP-TC058",
+                "report/rep058_kpi_report.py",
+                "KPI Report (Department User - Own Scope)",
+            ),
+            (
+                "REP-TC059",
+                "report/rep059_kpi_report.py",
+                "KPI Report (Search by User)",
+            ),
+            (
+                "REP-TC060",
+                "report/rep060_kpi_report.py",
+                "KPI Report (Filter by User & Department)",
+            ),
+            (
+                "REP-TC061",
+                "report/rep061_kpi_report.py",
+                "KPI Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC062",
+                "report/rep062_export_kpi_report.py",
+                "KPI Report (Direct Export < 100 Rows)",
+            ),
+            (
+                "REP-TC063",
+                "report/rep063_export_kpi_report.py",
+                "KPI Report (Queued Export > 100 Rows)",
+            ),
+            # Task Activity Report
+            (
+                "REP-TC064",
+                "report/rep064_task_activity_report.py",
+                "Task Activity Report (General User - Own Scope)",
+            ),
+            (
+                "REP-TC065",
+                "report/rep065_task_activity_report.py",
+                "Task Activity Report (Related Process User Scope)",
+            ),
+            (
+                "REP-TC066",
+                "report/rep066_task_activity_report.py",
+                "Task Activity Report (All Process Info Scope)",
+            ),
+            (
+                "REP-TC067",
+                "report/rep067_task_activity_report.py",
+                "Task Activity Report (Search by Project / App / User / Status)",
+            ),
+            (
+                "REP-TC068",
+                "report/rep068_task_activity_report.py",
+                "Task Activity Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC069",
+                "report/rep069_task_activity_report.py",
+                "Task Activity Report (Filter by User)",
+            ),
+            (
+                "REP-TC070",
+                "report/rep070_task_activity_report.py",
+                "Task Activity Report (Download Back End)",
+            ),
+            (
+                "REP-TC071",
+                "report/rep071_task_activity_report.py",
+                "Task Activity Report (Download Front End)",
+            ),
+            # Application Activity Report
+            (
+                "REP-TC072",
+                "report/rep072_application_activity_report.py",
+                "Application Activity Report (General User - Own Scope)",
+            ),
+            (
+                "REP-TC073",
+                "report/rep073_application_activity_report.py",
+                "Application Activity Report (Related Process User Scope)",
+            ),
+            (
+                "REP-TC074",
+                "report/rep074_application_activity_report.py",
+                "Application Activity Report (All Process Info Scope)",
+            ),
+            (
+                "REP-TC075",
+                "report/rep075_application_activity_report.py",
+                "Application Activity Report (Search by Project / App / User / Status)",
+            ),
+            (
+                "REP-TC076",
+                "report/rep076_application_activity_report.py",
+                "Application Activity Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC077",
+                "report/rep077_application_activity_report.py",
+                "Application Activity Report (Download Back End)",
+            ),
+            (
+                "REP-TC078",
+                "report/rep078_application_activity_report.py",
+                "Application Activity Report (Download Front End)",
+            ),
+            # Workflow Activity Report
+            (
+                "REP-TC079",
+                "report/rep079_workflow_activity_report.py",
+                "Workflow Activity Report (General User - Own Scope)",
+            ),
+            (
+                "REP-TC080",
+                "report/rep080_workflow_activity_report.py",
+                "Workflow Activity Report (Related Process User Scope)",
+            ),
+            (
+                "REP-TC081",
+                "report/rep081_workflow_activity_report.py",
+                "Workflow Activity Report (All Process Info Scope)",
+            ),
+            (
+                "REP-TC082",
+                "report/rep082_workflow_activity_report.py",
+                "Workflow Activity Report (Search by User / Operation / IP)",
+            ),
+            (
+                "REP-TC083",
+                "report/rep083_workflow_activity_report.py",
+                "Workflow Activity Report (Filter by Process)",
+            ),
+            (
+                "REP-TC084",
+                "report/rep084_workflow_activity_report.py",
+                "Workflow Activity Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC085",
+                "report/rep085_workflow_activity_report.py",
+                "Workflow Activity Report (Download Back End)",
+            ),
+            (
+                "REP-TC086",
+                "report/rep086_workflow_activity_report.py",
+                "Workflow Activity Report (Download Front End)",
+            ),
+            # Custom Report
+            (
+                "REP-TC087",
+                "report/rep087_custom_report.py",
+                "Custom Report (General User - Own Scope)",
+            ),
+            (
+                "REP-TC088",
+                "report/rep088_custom_report.py",
+                "Custom Report (Related Process User Scope)",
+            ),
+            (
+                "REP-TC089",
+                "report/rep089_custom_report.py",
+                "Custom Report (All Process Info Scope)",
+            ),
+            (
+                "REP-TC090",
+                "report/rep090_custom_report.py",
+                "Custom Report (Search by App / User / Status)",
+            ),
+            (
+                "REP-TC091",
+                "report/rep091_custom_report.py",
+                "Custom Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC092",
+                "report/rep092_custom_report.py",
+                "Custom Report (Filter by Status & Initiator)",
+            ),
+            (
+                "REP-TC093",
+                "report/rep093_custom_report.py",
+                "Custom Report (Download Back End)",
+            ),
+            (
+                "REP-TC094",
+                "report/rep094_custom_report.py",
+                "Custom Report (Download Front End)",
+            ),
+            # Auto Approval Report
+            (
+                "REP-TC095",
+                "report/rep095_auto_approval_report.py",
+                "Auto Approval Report (General User - Own Scope)",
+            ),
+            (
+                "REP-TC096",
+                "report/rep096_auto_approval_report.py",
+                "Auto Approval Report (Related Process User Scope)",
+            ),
+            (
+                "REP-TC097",
+                "report/rep097_auto_approval_report.py",
+                "Auto Approval Report (All Process Info Scope)",
+            ),
+            (
+                "REP-TC098",
+                "report/rep098_auto_approval_report.py",
+                "Auto Approval Report (Search by Project / App / User)",
+            ),
+            (
+                "REP-TC099",
+                "report/rep099_auto_approval_report.py",
+                "Auto Approval Report (Column Sorting)",
+            ),
+            (
+                "REP-TC100",
+                "report/rep100_auto_approval_report.py",
+                "Auto Approval Report (Date Range Filter)",
+            ),
+            (
+                "REP-TC101",
+                "report/rep101_auto_approval_report.py",
+                "Auto Approval Report (Filter by Process & User)",
+            ),
+            (
+                "REP-TC102",
+                "report/rep102_auto_approval_report.py",
+                "Auto Approval Report (Export CSV / Excel)",
+            ),
+        ],
     },
     "Configurable": {
         "sheet_name": "Configurable",
@@ -1599,7 +2135,12 @@ class AutomationRunnerGUI(tk.Tk):
                 fill="#E2E8F0",
                 dash=(4, 4),
             )
-            short_id = tid.replace("DMS-", "").replace("CORE-", "C-")
+            short_id = (
+                tid.replace("DMS-", "")
+                .replace("CORE-", "C-")
+                .replace("REP-TC", "R-")
+                .replace("REP-", "R-")
+            )
             c.create_text(
                 px,
                 plot_y1 + int(14 * s),
@@ -1845,11 +2386,11 @@ class AutomationRunnerGUI(tk.Tk):
 
     @staticmethod
     def _log_tag(text):
-        if "FAIL" in text or "Traceback" in text:
+        if "FAIL" in text or ": Fail " in text or "Traceback" in text:
             return "fail"
-        if "PASS" in text:
+        if "PASS" in text or ": Pass " in text:
             return "pass"
-        if "[!]" in text or "[-]" in text or "STOPPED" in text:
+        if "[!]" in text or "[-]" in text or "STOPPED" in text or "BLOCKED" in text or ": Blocked " in text:
             return "warn"
         if "RUNNING" in text or text.startswith("="):
             return "info"
@@ -2235,14 +2776,15 @@ class AutomationRunnerGUI(tk.Tk):
         """Runs one test file. Returns 'pass', 'fail' or 'stopped'."""
         import allure_viewer
 
+        allure_dir = str(allure_viewer.resolve_allure_results_dir(APP_DIR))
         env = {
             **os.environ,
             "PYTHONIOENCODING": "utf-8",
+            "PYTHONUNBUFFERED": "1",
             "SHEET_NAME": sheet_name,
             "EXCEL_PATH": excel_path,
-            "DMS_ALLURE_RESULTS_DIR": str(
-                allure_viewer.resolve_allure_results_dir(APP_DIR)
-            ),
+            "DMS_ALLURE_RESULTS_DIR": allure_dir,
+            "REPORT_ALLURE_RESULTS_DIR": allure_dir,
         }
 
         if getattr(sys, "frozen", False):
