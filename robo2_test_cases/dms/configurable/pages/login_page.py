@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -11,8 +12,14 @@ from report.pages.base_page import BasePage
 
 
 class LoginPage(BasePage):
-    USERNAME_INPUT = (By.CSS_SELECTOR, "input[name='username'], input#username, input[type='text']")
-    PASSWORD_INPUT = (By.CSS_SELECTOR, "input[name='password'], input#password, input[type='password']")
+    USERNAME_INPUT = (
+        By.XPATH,
+        "//input[contains(@placeholder, 'Username') or @name='username' or @id='username']",
+    )
+    PASSWORD_INPUT = (
+        By.XPATH,
+        "//input[contains(@placeholder, 'Password') or @name='password' or @id='password']",
+    )
     LOGIN_BUTTON = (By.CSS_SELECTOR, "button[type='submit'], button.btn-login, input[type='submit']")
     ERROR_CONTAINER = (
         By.CSS_SELECTOR,
@@ -25,30 +32,63 @@ class LoginPage(BasePage):
     )
     LOGOUT_LINK = (By.CSS_SELECTOR, "a[href*='logout']")
 
+    def clear_session(self) -> None:
+        try:
+            self.driver.delete_all_cookies()
+            self.driver.execute_script(
+                "window.localStorage.clear(); window.sessionStorage.clear();"
+            )
+        except Exception:
+            pass
+
+    def is_login_page_displayed(self, timeout: int = 5) -> bool:
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                EC.visibility_of_element_located(self.USERNAME_INPUT)
+            )
+            return True
+        except TimeoutException:
+            return False
+
     def open_login(self, base_url: str) -> None:
-        self.driver.get(f"{base_url.rstrip('/')}/login/")
+        base = base_url.rstrip("/")
+        self.driver.get(base)
         self.wait_for_page_load()
+        if not self.is_login_page_displayed(timeout=4):
+            self.clear_session()
+            self.driver.get(f"{base}/login/")
+            self.wait_for_page_load()
 
     def logout_if_needed(self, base_url: str) -> None:
-        self.driver.get(f"{base_url.rstrip('/')}/login/logout/")
+        base = base_url.rstrip("/")
+        self.driver.get(f"{base}/login/logout/")
         self.wait_for_page_load()
+        if not self.is_login_page_displayed(timeout=4):
+            self.clear_session()
 
     def submit_credentials(self, username: str, password: str) -> None:
         user_el = self.wait.until(EC.visibility_of_element_located(self.USERNAME_INPUT))
+        user_el.clear()
+        user_el.send_keys(username)
+
         pass_el = self.wait.until(EC.visibility_of_element_located(self.PASSWORD_INPUT))
-        self.set_value(user_el, username)
-        self.set_value(pass_el, password)
-        btn = self.wait.until(EC.element_to_be_clickable(self.LOGIN_BUTTON))
-        self.click(btn)
+        pass_el.clear()
+        pass_el.send_keys(password, Keys.ENTER)
         self.wait_for_page_load()
-        time.sleep(0.6)
+        time.sleep(0.5)
 
     def login_expect_success(self, base_url: str, username: str, password: str) -> None:
         self.open_login(base_url)
         self.submit_credentials(username, password)
-        WebDriverWait(self.driver, 15).until(
-            lambda d: "/login" not in d.current_url.casefold() or "dashboard" in d.current_url.casefold()
-        )
+        try:
+            WebDriverWait(self.driver, 15).until(
+                EC.invisibility_of_element_located(self.USERNAME_INPUT)
+            )
+        except TimeoutException as exc:
+            raise AssertionError(
+                f"Login as '{username}' failed (still on login page: {self.driver.current_url}). "
+                f"Page message: {self.read_error_text()[:250]}"
+            ) from exc
 
     def login_expect_error(
         self, base_url: str, username: str, password: str, expected_substring: str

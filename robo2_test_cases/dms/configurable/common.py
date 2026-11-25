@@ -1,31 +1,35 @@
 """Shared runner, POM session, Allure writer (no pytest), and Excel updater for Configurable tests."""
 from __future__ import annotations
 
+from contextlib import contextmanager
+from datetime import datetime
 import json
+import os
+from pathlib import Path
 import sys
 import time
 import traceback
-import uuid
-from contextlib import contextmanager
-from pathlib import Path
 from typing import Callable
+import uuid
 
 import openpyxl
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 
-# Ensure dms/ is importable so report.pages.base_page can be reused cleanly
-DMS_DIR = Path(__file__).resolve().parents[1]
-if str(DMS_DIR) not in sys.path:
-    sys.path.insert(0, str(DMS_DIR))
+# Ensure both dms/ and dms/configurable/ are importable regardless of working directory
+CONFIGURABLE_DIR = Path(__file__).resolve().parent
+DMS_DIR = CONFIGURABLE_DIR.parent
+for _path in (str(CONFIGURABLE_DIR), str(DMS_DIR)):
+    if _path not in sys.path:
+        sys.path.append(_path)
 
-import configurable_config as cfg
-from pages.login_page import LoginPage
-from pages.user_management_page import UserManagementPage
+from configurable import configurable_config as cfg  # noqa: E402
+from configurable.pages.login_page import LoginPage  # noqa: E402
+from configurable.pages.user_management_page import UserManagementPage  # noqa: E402
 
-ALLURE_DIR = DMS_DIR / "allure-results"
-SHEET_NAME = "Configurable"
+ALLURE_DIR = cfg.ALLURE_RESULTS_DIR
+SHEET_NAME = cfg.SHEET_NAME
 
 
 class AllureStandaloneWriter:
@@ -117,11 +121,16 @@ class ConfigurableSession:
 
 def _build_driver() -> webdriver.Chrome:
     opts = Options()
-    opts.add_argument("--start-maximized")
     opts.add_argument("--disable-notifications")
+    if cfg.is_headless():
+        opts.add_argument("--headless=new")
+        opts.add_argument("--window-size=1920,1080")
+    else:
+        opts.add_argument("--start-maximized")
     prefs = {
         "download.default_directory": str(cfg.download_dir()),
         "download.prompt_for_download": False,
+        "profile.default_content_setting_values.automatic_downloads": 1,
         "safebrowsing.enabled": True,
     }
     opts.add_experimental_option("prefs", prefs)
@@ -137,20 +146,91 @@ def _save_evidence(driver: webdriver.Chrome, test_case_id: str, suffix: str) -> 
     return path
 
 
-def _update_excel(test_case_id: str, status: str, actual_result: str) -> None:
-    wb_path = cfg.excel_path()
-    print(f"Checking Excel: {wb_path} [Sheet: {SHEET_NAME}] for {test_case_id}")
-    wb = openpyxl.load_workbook(wb_path)
-    ws = wb[SHEET_NAME]
-    for row_idx in range(5, ws.max_row + 1):
-        cell_val = str(ws.cell(row=row_idx, column=1).value or "").strip()
-        if cell_val == test_case_id:
-            ws.cell(row=row_idx, column=5, value=actual_result[:500])
-            ws.cell(row=row_idx, column=6, value=status)
-            wb.save(wb_path)
-            print(f"Saved to: {wb_path} (sheet '{SHEET_NAME}', row {row_idx})")
-            return
-    print(f"Warning: {test_case_id} not found in sheet '{SHEET_NAME}'.")
+def _find_row_and_columns(ws, test_case_id: str) -> tuple[int | None, dict[str, int | None]]:
+    headers: dict[int, str] = {}
+    for h_row in (cfg.HEADER_ROW, 1, 2, 3, 5):
+        for col in range(1, ws.max_column + 1):
+            text = str(ws.cell(h_row, col).value or "").strip().lower()
+            if text:
+                headers[col] = text
+        if any("status" in t or "actual" in t for t in headers.values()):
+            break
+        headers.clear()
+
+    def _col_of(*keywords: str) -> int | None:
+        for kw in keywords:
+            if not kw:
+                continue
+            for col, text in headers.items():
+                if kw in text:
+                    return col
+        return None
+
+    columns = {
+        "actual": _col_of("actual"),
+        "status": _col_of("status"),
+        "evidence": _col_of(cfg.EVIDENCE_HEADER, "remark", "evidence", "screenshot", "screen shot"),
+        "date": _col_of("date"),
+        "tester": _col_of("tester"),
+    }
+
+    target_id = str(test_case_id).strip().casefold()
+    target_row = next(
+        (
+            r for r in range(1, ws.max_row + 1)
+            if str(ws.cell(r, 1).value or "").strip().casefold() == target_id
+        ),
+        None,
+    )
+    return target_row, columns
+
+
+def _update_excel(
+    test_case_id: str,
+    status: str,
+    actual_result: str,
+    shot_path: Path | None = None,
+) -> None:
+    wb_path, sheet_name = cfg.active_excel_and_sheet()
+    print(f"Checking Excel: {wb_path} [Sheet: {sheet_name}] for {test_case_id}")
+    try:
+        wb = openpyxl.load_workbook(wb_path)
+    except PermissionError as exc:
+        print(f"[!] Excel update skipped (close workbook to save): {exc}")
+        return
+
+    ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+    row_idx, columns = _find_row_and_columns(ws, test_case_id)
+    if row_idx is None:
+        print(f"Warning: {test_case_id} not found in sheet '{ws.title}'.")
+        return
+
+    shot_file = str(shot_path.resolve()) if shot_path and shot_path.is_file() else ""
+    target_link = shot_file or cfg.EVIDENCE_LINK
+    display_text = shot_path.name if shot_file and shot_path else "Evidence Doc"
+
+    values = {
+        "actual": actual_result[:500],
+        "status": status,
+        "evidence": display_text,
+        "date": datetime.now().strftime("%d-%b-%Y"),
+        "tester": os.getenv("TESTER_NAME") or cfg.TESTER_NAME,
+    }
+    for key, col in columns.items():
+        if col:
+            ws.cell(row=row_idx, column=col, value=values[key])
+
+    if columns["evidence"] and target_link:
+        cell = ws.cell(row=row_idx, column=columns["evidence"])
+        cell.value = display_text
+        cell.hyperlink = target_link
+        cell.style = "Hyperlink"
+
+    try:
+        wb.save(wb_path)
+        print(f"Saved to: {wb_path} (sheet '{ws.title}', row {row_idx})")
+    except PermissionError as exc:
+        print(f"[!] Excel save skipped (file is locked/open): {exc}")
 
 
 def run_configurable_test(
@@ -159,25 +239,33 @@ def run_configurable_test(
     test_fn: Callable[[ConfigurableSession], str],
     docstring: str | None = "",
 ) -> None:
+    os.chdir(CONFIGURABLE_DIR)
+    os.environ.setdefault("SHEET_NAME", cfg.SHEET_NAME)
+
     title = (docstring or test_case_id).strip().splitlines()[0]
     allure_writer = AllureStandaloneWriter(test_case_id, title, docstring or "")
     driver = _build_driver()
     wait = WebDriverWait(driver, 15)
     session = ConfigurableSession(driver, wait, allure_writer)
 
+    passed = False
     try:
         actual = test_fn(session)
         shot = _save_evidence(driver, test_case_id, "PASS")
         allure_writer.attach_png(shot, "Pass Evidence")
         allure_writer.finalize("passed", actual)
-        _update_excel(test_case_id, "Pass", actual)
+        _update_excel(test_case_id, "Pass", actual, shot_path=shot)
         print(f"\n{test_case_id}: Pass - {actual}")
+        passed = True
     except Exception as exc:
         err_msg = f"{type(exc).__name__}: {exc}"
         shot = _save_evidence(driver, test_case_id, "FAIL")
         allure_writer.attach_png(shot, "Failure Screenshot")
         allure_writer.finalize("failed", err_msg, traceback.format_exc())
-        _update_excel(test_case_id, "Fail", err_msg)
+        _update_excel(test_case_id, "Fail", err_msg, shot_path=shot)
         print(f"\n{test_case_id}: Fail - {err_msg}")
     finally:
         driver.quit()
+
+    if not passed:
+        raise SystemExit(1)

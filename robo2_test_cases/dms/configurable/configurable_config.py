@@ -64,6 +64,29 @@ ALLURE_RESULTS_DIR: Path = resolve_dir(
 )
 
 
+def base_url() -> str:
+    if not BASE_URL:
+        raise ConfigurableConfigError(f"Set BASE_URL in {ENV_FILE}, then run again.")
+    return BASE_URL
+
+
+def route(name: str, default: str) -> str:
+    key = f"CONFIGURABLE_ROUTE_{name.strip().upper()}"
+    return env_str(key, default=default)
+
+
+def download_dir() -> Path:
+    return DOWNLOAD_DIR
+
+
+def evidence_dir() -> Path:
+    return SCREENSHOT_DIR
+
+
+def excel_path() -> Path:
+    return Path(active_excel_and_sheet()[0])
+
+
 def admin_credentials() -> tuple[str, str]:
     if not (ADMIN_USERNAME and ADMIN_PASSWORD):
         raise ConfigurableConfigError(
