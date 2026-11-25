@@ -12,9 +12,9 @@ ROUTE = "/workflow/workflow_report/wf_auto_approval/"
 
 
 def test_related_process_auto_approval_report(session: c.ReportSession) -> str:
-    session.login_as_role("wf_related_process_user")
+    username = session.login_as_role("wf_related_process_user")
     session.open_report(ROUTE)
-    return session.verify_scope("all")
+    return session.verify_other_user_visible(username)
 
 
 if __name__ == "__main__":

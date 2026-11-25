@@ -11,9 +11,26 @@ ROUTE = "/workflow/workflow_report/overall_monitor/"
 
 
 def test_own_application_activity_report(session: c.ReportSession) -> str:
-    session.login_as_role("wf_user")
+    session.login_as_role("wf_admin")
     session.open_report(ROUTE)
-    return session.verify_scope("own")
+    admin_count = session.report_page.assert_has_rows("wf_admin baseline")
+
+    username = session.login_as_role("wf_user")
+    session.open_report(ROUTE)
+    with session.step(
+        f"Verify '{username}' sees own participated applications (restricted vs admin)"
+    ):
+        session.report_page.assert_table_contains(username, "own participated application")
+        own_count = session.report_page.row_count()
+        if own_count >= admin_count:
+            raise AssertionError(
+                f"Expected restricted application list for '{username}', "
+                f"but saw {own_count} row(s) vs admin's {admin_count}."
+            )
+    return (
+        f"Role 'wf_user': sees own participated applications for '{username}' "
+        f"({own_count} row(s) vs admin's {admin_count})."
+    )
 
 
 if __name__ == "__main__":
