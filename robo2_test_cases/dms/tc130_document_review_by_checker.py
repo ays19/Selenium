@@ -18,10 +18,10 @@ TEST_CASE_ID = "DMS-TC130"
 
 def checker_list(session: c.DmsSession) -> tuple[bool, str]:
     doc_type = os.getenv("CHECKER_DOC_TYPE", "").strip()
-    checker_name = os.getenv("CHECKER_NAME", "").strip() or os.getenv("DMS_USERNAME", "")
+    checker_name = os.getenv("CHECKER_NAME", "").strip() or c.cfg.USERNAME
     info = session.upload_document("pdf", doc_type=doc_type, require_checker=True, checker_name=checker_name)
     name = info["name"]
-    maker_filter_term = os.getenv("CHECKER_NAME", "").strip() or os.getenv("DMS_USERNAME", "")
+    maker_filter_term = os.getenv("CHECKER_NAME", "").strip() or c.cfg.USERNAME
 
     def _verify_checker_view():
         val, default_label = session.review.default_user_filter()

@@ -32,7 +32,7 @@ def find_tests(filters):
 
 def resolve_allure_dir():
     """Resolve the Allure results directory matching report/common.py."""
-    raw = os.getenv("REPORT_ALLURE_RESULTS_DIR")
+    raw = os.getenv("REPORT_ALLURE_RESULTS_DIR") or os.getenv("ALLURE_RESULTS_DIR")
     if raw is None:
         try:
             from dotenv import dotenv_values
@@ -41,7 +41,8 @@ def resolve_allure_dir():
         if dotenv_values is not None:
             for env_file in (FOLDER / ".env.report", PROJECT_ROOT / ".env"):
                 if env_file.is_file():
-                    val = dotenv_values(env_file).get("REPORT_ALLURE_RESULTS_DIR")
+                    vals = dotenv_values(env_file)
+                    val = vals.get("REPORT_ALLURE_RESULTS_DIR") or vals.get("ALLURE_RESULTS_DIR")
                     if val is not None:
                         raw = val
                         break

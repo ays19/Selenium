@@ -390,7 +390,7 @@ def run_dms_test(
 ) -> None:
     """Execute one or more DMS scenarios with POM, Allure steps/evidence, and Excel reporting."""
     os.chdir(DMS_DIR)
-    os.environ.setdefault("SHEET_NAME", "DMS")
+    os.environ.setdefault("SHEET_NAME", cfg.SHEET_NAME)
 
     title, description = _parse_docstring(doc, test_case_id)
     reporter = create_allure_reporter()

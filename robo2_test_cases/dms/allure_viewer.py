@@ -18,7 +18,11 @@ _ATTACH_TEXT_LIMIT = 32768
 
 def resolve_allure_results_dir(app_dir: Path) -> Path:
     """Return configured Allure results directory (resolved relative to app_dir)."""
-    raw = (os.getenv("DMS_ALLURE_RESULTS_DIR") or "allure-results").strip()
+    raw = (
+        os.getenv("DMS_ALLURE_RESULTS_DIR")
+        or os.getenv("ALLURE_RESULTS_DIR")
+        or "allure-results"
+    ).strip()
     candidate = Path(raw)
     return candidate.resolve() if candidate.is_absolute() else (app_dir / candidate).resolve()
 

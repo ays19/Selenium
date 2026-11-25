@@ -3,7 +3,7 @@ Core POM + Data-Driven + Allure + Excel test harness for the Report test suite.
 
 Architecture:
 - pages/           -> Selenium Page Object Model classes (LoginPage, ReportPage, RequestedDownloadsPage)
-- report_config.py -> Loads credentials & runtime settings from .env.report
+- report_config.py -> Loads credentials & runtime settings from shared dms/.env
 - report_data.py   -> Data-driven search/filter inputs, expected texts, and rolling date range
 - allure_reporter.py -> Allure 2 step logging and attachments
 - common.py        -> ReportSession facade, browser factory, screenshots, Excel reporting, and test runner
@@ -41,7 +41,19 @@ from report.pages.login_page import LoginError, LoginPage  # noqa: E402
 from report.pages.report_page import ReportPage  # noqa: E402
 from report.pages.requested_downloads_page import RequestedDownloadsPage  # noqa: E402
 from report.report_config import (  # noqa: E402
+    ALLURE_RESULTS_DIR,
+    BASE_URL,
+    DOWNLOAD_DIR as _DOWNLOAD_DIR_PATH,
+    EVIDENCE_HEADER,
+    EVIDENCE_LINK,
+    EXCEL_PATH,
+    HEADER_ROW,
+    REQUESTED_DOWNLOAD_URL,
+    SCREENSHOT_DIR as _SCREENSHOT_DIR_PATH,
+    SHEET_NAME,
+    TESTER_NAME,
     ReportConfigError,
+    active_excel_and_sheet as _config_active_excel_and_sheet,
     date_selectors,
     get_profile,
     is_headless,
@@ -60,26 +72,8 @@ from report.report_data import (  # noqa: E402
 # 1. Runtime Paths & Settings (loaded once via report_config)
 # =============================================================================
 
-BASE_URL: str = (os.getenv("BASE_URL") or "").rstrip("/")
-TESTER_NAME: str = os.getenv("TESTER_NAME") or ""
-SHEET_NAME: str = os.getenv("SHEET_NAME", "Report")
-EXCEL_PATH: str = os.getenv("EXCEL_PATH") or ""
-EVIDENCE_LINK: str = os.getenv("EVIDENCE_LINK") or ""
-EVIDENCE_HEADER: str = os.getenv("EVIDENCE_HEADER", "remark").lower()
-HEADER_ROW: int = 4
-
-
-def _resolve_dir(env_key: str, default_name: str) -> Path:
-    path = Path(os.getenv(env_key, default_name))
-    resolved = path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
-    resolved.mkdir(parents=True, exist_ok=True)
-    return resolved
-
-
-SCREENSHOT_DIR: str = str(_resolve_dir("SCREENSHOT_DIR", "screenshots"))
-DOWNLOAD_DIR: str = str(_resolve_dir("DOWNLOAD_DIR", "downloads"))
-ALLURE_RESULTS_DIR: Path = _resolve_dir("REPORT_ALLURE_RESULTS_DIR", "allure-results")
-REQUESTED_DOWNLOAD_URL: str = f"{BASE_URL}/requested_downloads/view/"
+SCREENSHOT_DIR: str = str(_SCREENSHOT_DIR_PATH)
+DOWNLOAD_DIR: str = str(_DOWNLOAD_DIR_PATH)
 
 _LAST_SAVED_SHOTS: dict[str, list[str]] = {}
 
@@ -190,7 +184,7 @@ class ReportSession:
                 own_text = (self.current_username or own_text).strip()
                 if not own_text or not other_text:
                     raise BlockedTest(
-                        "Set REPORT_USERNAME and REPORT_MANAGER_USERNAME in .env.report."
+                        "Set GENERAL_USERNAME and ADMIN_USERNAME (or REPORT_USERNAME / REPORT_MANAGER_USERNAME) in dms/.env."
                     )
                 self.report_page.assert_table_contains(own_text, "own-scope record")
                 self.report_page.assert_table_not_contains(
@@ -478,14 +472,10 @@ def short(error: BaseException) -> str:
 # =============================================================================
 
 def _active_excel_and_sheet() -> tuple[str, str]:
-    raw_excel = os.environ.get("EXCEL_PATH") or EXCEL_PATH
-    if not raw_excel:
-        raise SystemExit("EXCEL_PATH is not set in .env or environment.")
-    excel_path = Path(raw_excel)
-    if not excel_path.is_absolute():
-        excel_path = (PROJECT_ROOT / excel_path).resolve()
-    sheet_name = os.environ.get("SHEET_NAME") or SHEET_NAME or "Report"
-    return str(excel_path), sheet_name
+    try:
+        return _config_active_excel_and_sheet()
+    except ReportConfigError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _find_row_and_columns(ws, test_case_id: str) -> tuple[int | None, dict[str, int | None]]:
@@ -627,7 +617,7 @@ def run_report_test(
     feature: str | None = None,
 ) -> None:
     os.chdir(PROJECT_ROOT)
-    os.environ["SHEET_NAME"] = "Report"
+    os.environ.setdefault("SHEET_NAME", SHEET_NAME)
 
     title, description = _parse_docstring(doc or test_fn.__doc__, test_case_id)
     reporter = create_allure_reporter()

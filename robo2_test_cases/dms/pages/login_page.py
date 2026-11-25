@@ -68,7 +68,9 @@ class LoginPage(BasePage):
         if not self.base_url:
             raise LoginError("BASE_URL is not configured in .env.")
         if not username or not password:
-            raise LoginError("DMS_USERNAME and DMS_PASSWORD must be configured in .env.")
+            raise LoginError(
+                "ADMIN_USERNAME and ADMIN_PASSWORD (or DMS_USERNAME / DMS_PASSWORD) must be configured in .env."
+            )
         self.login_as(username, password)
 
     def login_as(self, username: str, password: str) -> None:
@@ -113,7 +115,9 @@ class LoginPage(BasePage):
         u2 = other_user or cfg.OTHER_USERNAME
         p2 = other_pass or cfg.OTHER_PASSWORD
         if not (u2 and p2):
-            raise LoginError("OTHER_USERNAME and OTHER_PASSWORD must be set in .env.")
+            raise LoginError(
+                "OTHER_USERNAME and OTHER_PASSWORD (or GENERAL_USERNAME / GENERAL_PASSWORD) must be set in .env."
+            )
         if u2.strip().lower() == (primary_user or "").strip().lower():
             return function()
 
@@ -121,7 +125,9 @@ class LoginPage(BasePage):
         try:
             self.login_as(u2, p2)
         except LoginError as exc:
-            raise LoginError(f"SECOND user (OTHER_USERNAME / OTHER_PASSWORD in .env): {exc}") from exc
+            raise LoginError(
+                f"SECOND user (OTHER_USERNAME / OTHER_PASSWORD or GENERAL_* in .env): {exc}"
+            ) from exc
 
         try:
             return function()

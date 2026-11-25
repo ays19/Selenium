@@ -173,6 +173,7 @@ def build():
         "--hidden-import=attrs",
         "--hidden-import=allure_viewer",
         f"--add-data={ROOT / 'common.py'}{os.pathsep}.",
+        f"--add-data={ROOT / 'env_config.py'}{os.pathsep}.",
         f"--add-data={ROOT / 'dms_config.py'}{os.pathsep}.",
         f"--add-data={ROOT / 'allure_reporter.py'}{os.pathsep}.",
         f"--add-data={ROOT / 'allure_viewer.py'}{os.pathsep}.",
@@ -193,6 +194,10 @@ def build():
     if report_dir.exists():
         pyinstaller_cmd.append(f"--add-data={report_dir}{os.pathsep}report")
 
+    configurable_dir = ROOT / "configurable"
+    if configurable_dir.exists():
+        pyinstaller_cmd.append(f"--add-data={configurable_dir}{os.pathsep}configurable")
+
     assets_dir = ROOT / "assets"
     if assets_dir.exists():
         pyinstaller_cmd.append(f"--add-data={assets_dir}{os.pathsep}assets")
@@ -210,6 +215,7 @@ def build():
         list(ROOT.glob("tc*.py"))
         + [
             ROOT / "common.py",
+            ROOT / "env_config.py",
             ROOT / "dms_config.py",
             ROOT / "allure_reporter.py",
             ROOT / "allure_viewer.py",
@@ -238,6 +244,14 @@ def build():
         shutil.copytree(
             report_dir,
             target_folder / "report",
+            ignore=shutil.ignore_patterns("__pycache__", "logs", "*.pyc"),
+            dirs_exist_ok=True,
+        )
+
+    if configurable_dir.exists():
+        shutil.copytree(
+            configurable_dir,
+            target_folder / "configurable",
             ignore=shutil.ignore_patterns("__pycache__", "logs", "*.pyc"),
             dirs_exist_ok=True,
         )

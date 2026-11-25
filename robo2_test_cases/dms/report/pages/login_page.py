@@ -95,7 +95,7 @@ class LoginPage(BasePage):
             except TimeoutException as exc:
                 popup = self.get_popup_message() or "no error banner shown"
                 raise LoginError(
-                    f"Login as '{username}' failed. Check report/.env.report. Page message: {popup}"
+                    f"Login as '{username}' failed. Check dms/.env. Page message: {popup}"
                 ) from exc
 
     def logout(self) -> None:

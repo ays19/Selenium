@@ -125,10 +125,10 @@ def run_as_worker():
 
             os.chdir(script_dir)
 
-            # Load .env and .env.report inside script directory without overwriting GUI's EXCEL_PATH/SHEET_NAME
+            # Load suite-local override files and shared .env without overwriting GUI's EXCEL_PATH/SHEET_NAME
             env_candidates = []
             for base_dir in dict.fromkeys([APP_DIR / rel_parent, Path(script_dir)]):
-                for env_name in (".env.report", ".env"):
+                for env_name in (".env.report", ".env.configurable", ".env"):
                     env_file = base_dir / env_name
                     if env_file.is_file():
                         env_candidates.append(env_file)

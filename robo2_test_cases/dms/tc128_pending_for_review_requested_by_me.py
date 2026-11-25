@@ -20,7 +20,7 @@ TEST_CASE_ID = "DMS-TC128"
 
 def requested_by_me(session: c.DmsSession) -> tuple[bool, str]:
     doc_type = os.getenv("CHECKER_DOC_TYPE", "").strip()
-    checker_name = os.getenv("CHECKER_NAME", "").strip() or os.getenv("DMS_USERNAME", "")
+    checker_name = os.getenv("CHECKER_NAME", "").strip() or c.cfg.USERNAME
 
     def _maker_uploads():
         d1 = session.upload_document("pdf", doc_type=doc_type, require_checker=True, checker_name=checker_name)

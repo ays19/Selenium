@@ -2,7 +2,7 @@
 Data-driven test data for the Robo2mation Report test suite.
 
 Separation of concerns:
-- .env.report    -> secrets & account credentials ONLY
+- dms/.env       -> shared secrets & account credentials ONLY
 - report_data.py -> search inputs, filter values, expected texts, and date ranges
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from datetime import date, timedelta
 
 from report.report_config import general_username, manager_username
 
-# Usernames read once from .env.report (never duplicated in config)
+# Usernames read once from dms/.env (never duplicated in config)
 GENERAL_USER = general_username()
 MANAGER_USER = manager_username()
 

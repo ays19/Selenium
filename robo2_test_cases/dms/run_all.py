@@ -97,7 +97,11 @@ def main():
     for name, status in blocked + failed:
         print(f"  {status:8} {name}   (see logs/{name}.log)")
 
-    allure_dir = FOLDER / os.getenv("DMS_ALLURE_RESULTS_DIR", "allure-results")
+    allure_dir = FOLDER / (
+        os.getenv("DMS_ALLURE_RESULTS_DIR")
+        or os.getenv("ALLURE_RESULTS_DIR")
+        or "allure-results"
+    )
     print(f"\nAllure results directory: {allure_dir}")
     print("Generate HTML report with: allure serve allure-results")
 
