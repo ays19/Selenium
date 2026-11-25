@@ -11,9 +11,9 @@ ROUTE = "/workflow/workflow_report/wf_settings_activity/"
 
 
 def test_all_process_workflow_activity_report(session: c.ReportSession) -> str:
-    session.login_as_role("wf_admin")
+    username = session.login_as_role("wf_admin")
     session.open_report(ROUTE)
-    return session.verify_scope("all")
+    return session.verify_other_user_visible(username)
 
 
 if __name__ == "__main__":

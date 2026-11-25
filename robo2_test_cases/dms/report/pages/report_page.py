@@ -1333,30 +1333,74 @@ class ReportPage(BasePage):
             if current_els and (current_els[0].text or "").strip().casefold() == wanted:
                 return
 
-            self.click(toggles[0])
-            options = self.visible_elements(
-                By.CSS_SELECTOR,
-                ".dataTables_length .length_change .dropdown-menu a, .length-option .dropdown-menu a",
+            menu_sel = (
+                ".dataTables_length .length_change .dropdown-menu, "
+                ".length-option .dropdown-menu"
             )
+            option_sel = (
+                ".dataTables_length .length_change .dropdown-menu a, "
+                ".length-option .dropdown-menu a"
+            )
+            options = []
+            for _attempt in range(2):
+                self.click(toggles[0])
+                try:
+                    def _menu_ready(_d):
+                        menus = self.visible_elements(By.CSS_SELECTOR, menu_sel)
+                        if not menus:
+                            return False
+                        all_opts = self.driver.find_elements(By.CSS_SELECTOR, option_sel)
+                        vis_opts = self.visible_elements(By.CSS_SELECTOR, option_sel)
+                        if all_opts and len(vis_opts) == len(all_opts):
+                            return vis_opts
+                        return False
+
+                    options = WebDriverWait(self.driver, 3).until(_menu_ready)
+                    break
+                except TimeoutException:
+                    if self.visible_elements(By.CSS_SELECTOR, menu_sel):
+                        options = self.driver.find_elements(By.CSS_SELECTOR, option_sel)
+                        if options:
+                            break
+                    options = []
+
             target = next(
                 (
                     opt for opt in options
                     if (
                         wanted == "all"
                         and (
-                            "all" in (opt.text or "").casefold()
+                            "all" in (opt.get_attribute("textContent") or "").casefold()
                             or (opt.get_attribute("data-value") or "") == "-1"
                         )
                     )
                     or (opt.get_attribute("data-value") or "").strip().casefold() == wanted
-                    or (opt.text or "").strip().casefold() == wanted
+                    or (opt.get_attribute("textContent") or "").strip().casefold() == wanted
                 ),
                 None,
             )
             if target is None:
-                available = [(opt.get_attribute("data-value") or opt.text).strip() for opt in options]
+                available = [
+                    (opt.get_attribute("data-value") or opt.get_attribute("textContent") or "").strip()
+                    for opt in options
+                ]
                 raise LookupError(f"Page-size option '{size}' not found. Available: {available}")
-            self.click(target)
+            if target.is_displayed():
+                self.click(target)
+            else:
+                self.driver.execute_script("arguments[0].click();", target)
+            try:
+                WebDriverWait(self.driver, 5).until(
+                    lambda _d: any(
+                        (el.text or "").strip().casefold() == wanted
+                        for el in self.visible_elements(
+                            By.CSS_SELECTOR,
+                            ".dataTables_length #current-length, .length-option #current-length",
+                        )
+                    )
+                )
+            except TimeoutException:
+                pass
             self.wait_for_ajax_idle()
             return
 
