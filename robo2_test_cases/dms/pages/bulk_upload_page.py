@@ -258,14 +258,17 @@ class BulkUploadPage(BasePage):
 
     def parse_upload_report(self) -> dict:
         """Read rows in `#csv_file_data` and `#download_report` link (`bulk_upload.js`)."""
+        def _cell_text(td) -> str:
+            return (td.text or td.get_attribute("textContent") or "").strip()
+
         rows = []
         for tr in self.driver.find_elements(By.CSS_SELECTOR, "#csv_file_data tr"):
             tds = tr.find_elements(By.TAG_NAME, "td")
             if len(tds) >= 4:
                 rows.append({
-                    "index": tds[0].text.strip(),
-                    "detail": tds[1].text.strip(),
-                    "status": tds[3].text.strip(),
+                    "index": _cell_text(tds[0]),
+                    "detail": _cell_text(tds[1]),
+                    "status": _cell_text(tds[3]),
                 })
         report_links = self.driver.find_elements(By.CSS_SELECTOR, "#download_report a")
         href = report_links[0].get_attribute("href") if report_links else ""
@@ -274,6 +277,21 @@ class BulkUploadPage(BasePage):
             "has_report_link": bool(report_links and href),
             "report_href": href or "",
         }
+
+    def _wait_csv_section_settled(self, timeout: int = 5) -> None:
+        """Wait for jQuery slide/fade animation on `#csv_file_section` to finish."""
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                lambda drv: drv.execute_script(
+                    "var el = document.getElementById('csv_file_section');"
+                    "if (!el) return true;"
+                    "var st = window.getComputedStyle(el);"
+                    "var animating = window.jQuery ? window.jQuery(el).is(':animated') : false;"
+                    "return !animating && st.display !== 'none' && parseFloat(st.opacity || '1') >= 0.99;"
+                )
+            )
+        except TimeoutException:
+            pass
 
     def bulk_submit(self, term: str, csv_path: str, files: tuple[str, ...] | list[str] = ()) -> tuple[bool, str]:
         self.pick_bulk_doc_type(term)
@@ -290,6 +308,7 @@ class BulkUploadPage(BasePage):
             if alert:
                 return False, f"alert: {alert}"
             WebDriverWait(self.driver, 10).until(lambda drv: _section_shown(drv) or bool(drv.find_elements(By.CSS_SELECTOR, "#csv_file_data tr")))
+            self._wait_csv_section_settled()
         except UnexpectedAlertPresentException as error:
             return False, f"alert: {self.alert_message(error)}"
         except TimeoutException:
@@ -314,10 +333,12 @@ class BulkUploadPage(BasePage):
                 if alert_txt:
                     return True
                 popup = self.popup_text()
-                if popup and "select a folder" in popup.lower():
-                    return True
                 report = self.parse_upload_report()
                 rows = report["rows"]
+                if popup and "select a folder" in popup.lower():
+                    if rows and not any(r["detail"] or r["status"] for r in rows):
+                        return False
+                    return True
                 if not rows:
                     return False
                 all_done = all(
@@ -333,6 +354,7 @@ class BulkUploadPage(BasePage):
                 return True
 
             WebDriverWait(self.driver, 90, poll_frequency=0.5).until(_settled)
+            self._wait_csv_section_settled()
         except UnexpectedAlertPresentException as error:
             return False, f"alert: {self.alert_message(error)}"
         except TimeoutException:
