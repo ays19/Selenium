@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -137,11 +137,15 @@ class UserManagementPage(BasePage):
 
     def visible_rows(self, timeout: int = 12):
         def _has_rows(_d):
-            rows = [r for r in self.driver.find_elements(*self.TABLE_BODY_ROWS) if r.is_displayed()]
+            rows = self.visible_elements(*self.TABLE_BODY_ROWS)
             return rows if rows else False
 
         try:
-            return WebDriverWait(self.driver, timeout).until(_has_rows)
+            return WebDriverWait(
+                self.driver,
+                timeout,
+                ignored_exceptions=(StaleElementReferenceException,),
+            ).until(_has_rows)
         except TimeoutException:
             return []
 
@@ -237,23 +241,31 @@ class UserManagementPage(BasePage):
         raise TimeoutError(f"Expected '{action}' export file was not downloaded within {timeout}s.")
 
     def select_row_by_text(self, match_text: str = "") -> None:
-        rows = self.visible_rows()
-        if not rows:
-            raise AssertionError("No visible rows found to select.")
-        target_row = rows[0]
-        if match_text:
-            matched = next((r for r in rows if match_text.casefold() in r.text.casefold()), None)
-            if matched is None:
-                raise LookupError(f"Row containing '{match_text}' was not found in the table.")
-            target_row = matched
+        self.wait_for_ajax_idle()
+        for attempt in range(3):
+            try:
+                rows = self.visible_rows()
+                if not rows:
+                    raise AssertionError("No visible rows found to select.")
+                target_row = rows[0]
+                if match_text:
+                    matched = next((r for r in rows if match_text.casefold() in r.text.casefold()), None)
+                    if matched is None:
+                        raise LookupError(f"Row containing '{match_text}' was not found in the table.")
+                    target_row = matched
 
-        checkboxes = target_row.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
-        if checkboxes:
-            self.click(checkboxes[0])
-        else:
-            cells = target_row.find_elements(By.TAG_NAME, "td")
-            self.click(cells[0] if cells else target_row)
-        time.sleep(0.4)
+                checkboxes = target_row.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+                if checkboxes:
+                    self.click(checkboxes[0])
+                else:
+                    cells = target_row.find_elements(By.TAG_NAME, "td")
+                    self.click(cells[0] if cells else target_row)
+                time.sleep(0.4)
+                return
+            except StaleElementReferenceException:
+                if attempt == 2:
+                    raise
+                time.sleep(0.3)
 
     @staticmethod
     def _element_action_label(el) -> str:
