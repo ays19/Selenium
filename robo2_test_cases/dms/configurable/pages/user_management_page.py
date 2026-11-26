@@ -75,6 +75,11 @@ class UserManagementPage(BasePage):
     POSITION_INPUT = (By.NAME, "position")
     EDIT_USER_BTN = (By.ID, "edit_button")
     EDIT_USER_SUBMIT_BTN = (By.ID, "edit_user_submit")
+    APPROVE_REQUEST_BTN = (By.ID, "user_approve_button")
+    REJECT_REQUEST_BTN = (By.ID, "user_reject_button")
+    USER_ACTION_MODAL = (By.ID, "userActionModal")
+    USER_ACTION_COMMENT = (By.ID, "user_action_comment")
+    USER_ACTION_CONFIRM_BTN = (By.ID, "userActionConfirmBtn")
 
     def open(self, base_url: str, route: str) -> None:
         self.driver.get(f"{base_url.rstrip('/')}/{route.lstrip('/')}")
@@ -569,3 +574,77 @@ class UserManagementPage(BasePage):
             if wanted in text.casefold():
                 return text
         return ""
+
+    def _submit_checker_modal_action(
+        self,
+        trigger_locator,
+        *,
+        comment: str = "",
+        action_label: str = "Checker action",
+    ) -> str:
+        """Open #userActionModal via trigger button, fill optional comment, confirm, and return message."""
+        trigger = WebDriverWait(self.driver, 10).until(EC.element_to_be_clickable(trigger_locator))
+        self.click(trigger)
+        WebDriverWait(self.driver, 10).until(EC.visibility_of_element_located(self.USER_ACTION_MODAL))
+        confirm_btn = WebDriverWait(self.driver, 10).until(
+            EC.element_to_be_clickable(self.USER_ACTION_CONFIRM_BTN)
+        )
+        if comment:
+            comment_box = self.wait.until(EC.visibility_of_element_located(self.USER_ACTION_COMMENT))
+            self.set_value(comment_box, comment)
+        self.click(confirm_btn)
+
+        confirm_msg = ""
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            for el in self.visible_elements(*self.TOAST_OR_ALERT):
+                try:
+                    text = " ".join(el.text.split())
+                except Exception:
+                    continue
+                if text:
+                    confirm_msg = text
+                    break
+
+            for ok_btn in self.visible_elements(By.CSS_SELECTOR, ".swal2-confirm, .sweet-alert button.confirm"):
+                try:
+                    self.click(ok_btn)
+                    time.sleep(0.3)
+                except Exception:
+                    pass
+
+            if confirm_msg and not self.visible_elements(*self.USER_ACTION_MODAL):
+                break
+            time.sleep(0.2)
+
+        self.wait_for_ajax_idle()
+        if not confirm_msg:
+            errors = [
+                " ".join(el.text.split())
+                for el in self.visible_elements(
+                    By.CSS_SELECTOR,
+                    ".alert-danger, .toast-error, .text-danger, .help-block",
+                )
+                if el.text.strip()
+            ]
+            raise AssertionError(
+                f"{action_label} did not produce a confirmation message. "
+                f"Errors: {errors or ['none']} (URL: {self.driver.current_url})."
+            )
+        return confirm_msg
+
+    def approve_selected_request(self, comment: str = "") -> str:
+        """Approve the currently selected user approval request via #userActionModal."""
+        return self._submit_checker_modal_action(
+            self.APPROVE_REQUEST_BTN,
+            comment=comment,
+            action_label="Approve user request",
+        )
+
+    def reject_selected_request(self, comment: str) -> str:
+        """Reject the currently selected user approval request via #userActionModal."""
+        return self._submit_checker_modal_action(
+            self.REJECT_REQUEST_BTN,
+            comment=comment,
+            action_label="Reject user request",
+        )
