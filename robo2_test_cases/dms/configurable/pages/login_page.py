@@ -106,7 +106,8 @@ class LoginPage(BasePage):
             ]
             combined = " | ".join(texts)
             if combined:
-                last_error = combined
+                if len(combined) >= len(last_error):
+                    last_error = combined
                 if expected_substring.casefold() in combined.casefold():
                     return combined
             time.sleep(0.25)

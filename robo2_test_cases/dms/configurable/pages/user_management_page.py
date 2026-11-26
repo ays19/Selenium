@@ -497,6 +497,29 @@ class UserManagementPage(BasePage):
         confirm_msg = self._wait_for_submission_confirmation("add_user", "User approval request submission")
         return confirm_msg, selected_role
 
+    def create_user_request(
+        self,
+        username: str,
+        password: str,
+        email: str,
+        *,
+        first_name: str = "QA",
+        last_name: str = "",
+    ) -> str:
+        """Open the Add User Request form, submit a new user request, and return confirmation."""
+        self.open_add_user_request_form()
+        confirm_msg, _role = self.fill_and_submit_user_request(
+            first_name=first_name,
+            last_name=last_name or username,
+            username=username,
+            email=email,
+            password=password,
+            comment=f"Automated user request for {username}",
+        )
+        if not confirm_msg:
+            raise AssertionError(f"Expected confirmation message after creating request for '{username}'.")
+        return confirm_msg
+
     def _wait_for_submission_confirmation(self, form_url_fragment: str, action_label: str) -> str:
         """Poll for a visible confirmation toast/modal after submitting a user management form."""
         confirm_msg = ""
