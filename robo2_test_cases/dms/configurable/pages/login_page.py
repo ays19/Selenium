@@ -23,7 +23,8 @@ class LoginPage(BasePage):
     LOGIN_BUTTON = (By.CSS_SELECTOR, "button[type='submit'], button.btn-login, input[type='submit']")
     ERROR_CONTAINER = (
         By.CSS_SELECTOR,
-        ".alert-danger, .errorlist, .toast-error, .sweet-alert, .help-block, .text-danger, .login-error",
+        ".alert-danger, .alert-warning, .alert, [data-growl='container'], .growl-animated, "
+        ".errorlist, .toast-error, .sweet-alert, .swal2-popup, .help-block, .text-danger, .login-error",
     )
     MICROSOFT_LOGIN_BTN = (
         By.XPATH,
@@ -95,7 +96,22 @@ class LoginPage(BasePage):
     ) -> str:
         self.open_login(base_url)
         self.submit_credentials(username, password)
-        error_text = self.read_error_text()
+        last_error = ""
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            texts = [
+                " ".join(el.text.split())
+                for el in self.visible_elements(*self.ERROR_CONTAINER)
+                if el.text.strip()
+            ]
+            combined = " | ".join(texts)
+            if combined:
+                last_error = combined
+                if expected_substring.casefold() in combined.casefold():
+                    return combined
+            time.sleep(0.25)
+
+        error_text = last_error or self.read_error_text()
         if expected_substring.casefold() not in error_text.casefold():
             raise AssertionError(
                 f"Expected login error containing '{expected_substring}', "

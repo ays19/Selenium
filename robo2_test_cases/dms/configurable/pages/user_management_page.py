@@ -620,6 +620,21 @@ class UserManagementPage(BasePage):
                 return text
         return ""
 
+    def assert_user_presence(self, username: str, should_exist: bool = True) -> None:
+        """Search the current table for `username` and assert whether a matching row exists."""
+        self.search_table(username)
+        matched = self.find_row_containing(username, timeout=6)
+        if matched and "no matching records" in matched.casefold():
+            matched = ""
+        if should_exist and not matched:
+            raise AssertionError(
+                f"Expected user '{username}' to be present in table, but none found (URL: {self.driver.current_url})."
+            )
+        if not should_exist and matched:
+            raise AssertionError(
+                f"Expected user '{username}' NOT to be present in table, but found: '{matched}'."
+            )
+
     def _submit_checker_modal_action(
         self,
         trigger_locator,
