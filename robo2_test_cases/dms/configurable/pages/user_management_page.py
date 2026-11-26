@@ -586,6 +586,7 @@ class UserManagementPage(BasePage):
         self._open_edit_form_from_selected_row()
         ts = time.strftime("%m%d%H%M%S")
         confirm_msg = self.update_and_submit_user_request(
+            last_name=updated_value,
             position=updated_value or f"QA Updated {ts}",
             comment=f"Updated ({updated_value or ts})",
         )
