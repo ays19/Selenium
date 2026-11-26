@@ -581,13 +581,13 @@ class UserManagementPage(BasePage):
         self.select_row_by_text(match_text)
         self._open_edit_form_from_selected_row()
 
-    def edit_selected_user_and_submit(self) -> str:
+    def edit_selected_user_and_submit(self, updated_value: str = "") -> str:
         """Open Edit User Request for the already-selected row, update fields, and submit."""
         self._open_edit_form_from_selected_row()
         ts = time.strftime("%m%d%H%M%S")
         confirm_msg = self.update_and_submit_user_request(
-            position=f"QA Updated {ts}",
-            comment=f"Updated before approval ({ts})",
+            position=updated_value or f"QA Updated {ts}",
+            comment=f"Updated ({updated_value or ts})",
         )
         if not confirm_msg:
             raise AssertionError("Expected a confirmation message after submitting user update request.")
