@@ -52,7 +52,9 @@ class UserManagementPage(BasePage):
     ACTION_BUTTONS_LOCATOR = (
         By.CSS_SELECTOR,
         ".datatable-top-items ul.actions a, .datatable-top-items ul.actions button, "
-        ".activity-icons a, .activity-icons button, .dropdown-menu a, .dropdown-menu button",
+        ".activity-icons a, .activity-icons button, .dropdown-menu a, .dropdown-menu button, "
+        ".action-bar a, .action-bar button, .selected-actions a, .selected-actions button, "
+        "a[id$='_button'], button[id$='_button']",
     )
     TOAST_OR_ALERT = (
         By.CSS_SELECTOR,
@@ -253,19 +255,35 @@ class UserManagementPage(BasePage):
             self.click(cells[0] if cells else target_row)
         time.sleep(0.4)
 
+    @staticmethod
+    def _element_action_label(el) -> str:
+        label = (
+            el.get_attribute("title")
+            or el.get_attribute("data-original-title")
+            or ""
+        ).strip()
+        if not label:
+            for icon in el.find_elements(By.TAG_NAME, "i"):
+                icon_label = (
+                    icon.get_attribute("title")
+                    or icon.get_attribute("data-original-title")
+                    or ""
+                ).strip()
+                if icon_label:
+                    label = icon_label
+                    break
+        return label or (el.text or "").strip()
+
     def visible_row_action_labels(self) -> list[str]:
         labels: list[str] = []
+        seen: set[str] = set()
         for el in self.driver.find_elements(*self.ACTION_BUTTONS_LOCATOR):
             try:
                 if not el.is_displayed():
                     continue
-                label = (
-                    el.get_attribute("title")
-                    or el.get_attribute("data-original-title")
-                    or el.text
-                    or ""
-                ).strip()
-                if label:
+                label = self._element_action_label(el)
+                if label and label not in seen:
+                    seen.add(label)
                     labels.append(label)
             except Exception:
                 continue
@@ -289,13 +307,9 @@ class UserManagementPage(BasePage):
         for el in self.driver.find_elements(*self.ACTION_BUTTONS_LOCATOR):
             if not el.is_displayed():
                 continue
-            label = (
-                el.get_attribute("title")
-                or el.get_attribute("data-original-title")
-                or el.text
-                or ""
-            ).strip().casefold()
-            if wanted in label:
+            label = self._element_action_label(el).casefold()
+            text = (el.text or "").strip().casefold()
+            if wanted in label or wanted in text:
                 self.click(el)
                 time.sleep(0.4)
                 return
