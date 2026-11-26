@@ -471,7 +471,7 @@ class UserManagementPage(BasePage):
         self.click(edit_btn)
         self.wait_for_page_load()
         WebDriverWait(self.driver, 15).until(
-            lambda d: "edit_user_request" in d.current_url.casefold()
+            lambda d: "edit_user" in d.current_url.casefold()
             and self.visible_elements(*self.FIRST_NAME_INPUT)
         )
         self.wait_for_ajax_idle()
@@ -531,7 +531,7 @@ class UserManagementPage(BasePage):
 
         submit_btn = self.wait.until(EC.element_to_be_clickable(self.EDIT_USER_SUBMIT_BTN))
         self.click(submit_btn)
-        return self._wait_for_submission_confirmation("edit_user_request", "User update request submission")
+        return self._wait_for_submission_confirmation("edit_user", "User update request submission")
 
     def find_row_containing(self, needle: str, timeout: int = 12) -> str:
         wanted = needle.casefold()

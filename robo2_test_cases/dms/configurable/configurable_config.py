@@ -75,6 +75,12 @@ def route(name: str, default: str) -> str:
     return env_str(key, default=default)
 
 
+def env_value(name: str, default: str = "") -> str:
+    key = name.strip()
+    prefixed = f"CONFIGURABLE_{key.upper()}" if not key.upper().startswith("CONFIGURABLE_") else key
+    return env_str(prefixed, key, default=default)
+
+
 def download_dir() -> Path:
     return DOWNLOAD_DIR
 
