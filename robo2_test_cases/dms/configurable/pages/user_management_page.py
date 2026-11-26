@@ -20,8 +20,9 @@ class UserManagementPage(BasePage):
     )
     APPROVAL_PANEL_LINK = (
         By.XPATH,
-        "//a[contains(@href, 'approval') or contains(normalize-space(.), 'User Approval Request')]",
+        "//a[contains(@href, 'user-creation-requests') or contains(@href, 'approval') or contains(normalize-space(.), 'User Approval Request')]",
     )
+    PAGE_HEADER = (By.CSS_SELECTOR, "h4.table_header, .table_header")
 
     # DataTable v1 controls (matches Robo2mation v6 DOM)
     TABLE_BODY_ROWS = (By.CSS_SELECTOR, "table.dataTable tbody tr")
@@ -45,6 +46,7 @@ class UserManagementPage(BasePage):
     # Action toolbar / modal controls
     ADD_USER_BTN = (
         By.CSS_SELECTOR,
+        "#add_user_request_button, i[title='Add User Request'], "
         "a[title*='Add User' i], button[title*='Add User' i], #add_user_btn, a[href*='create']",
     )
     ACTION_BUTTONS_LOCATOR = (
@@ -52,7 +54,22 @@ class UserManagementPage(BasePage):
         ".datatable-top-items ul.actions a, .datatable-top-items ul.actions button, "
         ".activity-icons a, .activity-icons button, .dropdown-menu a, .dropdown-menu button",
     )
-    TOAST_OR_ALERT = (By.CSS_SELECTOR, ".toast-message, .alert-success, .sweet-alert, .notify-msg")
+    TOAST_OR_ALERT = (
+        By.CSS_SELECTOR,
+        ".toast-message, .alert-success, .alert-info, .alert[data-notify='container'], "
+        "[data-growl='container'], .growl-animated, .sweet-alert, .swal2-popup, .notify-msg",
+    )
+
+    # Add User / User Approval Request form controls
+    FIRST_NAME_INPUT = (By.NAME, "first_name")
+    LAST_NAME_INPUT = (By.NAME, "last_name")
+    USERNAME_INPUT = (By.NAME, "username")
+    EMAIL_INPUT = (By.NAME, "email")
+    PASSWORD_INPUT = (By.ID, "password")
+    CONFIRM_PASSWORD_INPUT = (By.ID, "cfrm_password")
+    COMMENT_INPUT = (By.ID, "comment")
+    ROLE_SELECT = (By.ID, "role_select")
+    ADD_USER_SUBMIT_BTN = (By.ID, "add_user_submit_button")
 
     def open(self, base_url: str, route: str) -> None:
         self.driver.get(f"{base_url.rstrip('/')}/{route.lstrip('/')}")
@@ -60,13 +77,58 @@ class UserManagementPage(BasePage):
         self.wait_for_ajax_idle()
 
     def assert_panels_visible(self) -> None:
-        users_links = self.driver.find_elements(*self.USERS_PANEL_LINK)
-        approval_links = self.driver.find_elements(*self.APPROVAL_PANEL_LINK)
+        users_links = self.visible_elements(*self.USERS_PANEL_LINK)
+        approval_links = self.visible_elements(*self.APPROVAL_PANEL_LINK)
         if not users_links or not approval_links:
             raise AssertionError(
                 f"Expected both 'Users' and 'User Approval Requests' panels to be visible. "
-                f"Found users={len(users_links)}, approval={len(approval_links)}."
+                f"Found visible users={len(users_links)}, approval={len(approval_links)}."
             )
+
+    def page_header_text(self, timeout: int = 10) -> str:
+        def _visible_header(_d):
+            for el in self.visible_elements(*self.PAGE_HEADER):
+                text = el.text.strip()
+                if text:
+                    return text
+            return False
+
+        try:
+            return WebDriverWait(self.driver, timeout).until(_visible_header)
+        except TimeoutException:
+            return ""
+
+    def assert_page_header_contains(self, expected: str, timeout: int = 10) -> str:
+        header = self.page_header_text(timeout=timeout)
+        if expected.casefold() not in header.casefold():
+            raise AssertionError(
+                f"Expected page header containing '{expected}', but got '{header}' "
+                f"(URL: {self.driver.current_url})."
+            )
+        return header
+
+    def open_approval_requests_panel(self) -> None:
+        links = self.visible_elements(*self.APPROVAL_PANEL_LINK)
+        if not links:
+            raise AssertionError("Visible 'User Approval Requests' panel link not found.")
+        self.click(links[0])
+        self.wait_for_page_load()
+        WebDriverWait(self.driver, 15).until(
+            lambda _d: any(
+                "user approval request" in el.text.strip().casefold()
+                for el in self.visible_elements(*self.PAGE_HEADER)
+            )
+        )
+        self.wait_for_ajax_idle()
+
+    def assert_table_has_rows(self, panel_name: str, timeout: int = 15) -> list:
+        rows = self.visible_rows(timeout=timeout)
+        if not rows:
+            raise AssertionError(
+                f"Expected '{panel_name}' table to display rows, but none loaded "
+                f"(URL: {self.driver.current_url})."
+            )
+        return rows
 
     def visible_rows(self, timeout: int = 12):
         def _has_rows(_d):
@@ -78,7 +140,27 @@ class UserManagementPage(BasePage):
         except TimeoutException:
             return []
 
+    def dismiss_growl_notifications(self) -> None:
+        for close_btn in self.visible_elements(
+            By.CSS_SELECTOR,
+            "[data-growl='container'] .close, [data-growl='container'] [data-growl='dismiss'], "
+            ".growl-animated .close",
+        ):
+            try:
+                self.click(close_btn)
+            except Exception:
+                pass
+        try:
+            WebDriverWait(self.driver, 5).until(
+                lambda _d: not self.visible_elements(
+                    By.CSS_SELECTOR, "[data-growl='container'], .growl-animated"
+                )
+            )
+        except TimeoutException:
+            pass
+
     def search_table(self, query: str) -> None:
+        self.dismiss_growl_notifications()
         search_box = self.wait.until(EC.visibility_of_element_located(self.TABLE_SEARCH_INPUT))
         self.set_value(search_box, query)
         search_box.send_keys(Keys.ENTER)
@@ -240,3 +322,147 @@ class UserManagementPage(BasePage):
             return el.text.strip()
         except TimeoutException:
             return ""
+
+    def open_add_user_request_form(self) -> None:
+        btn = self.wait.until(EC.visibility_of_element_located(self.ADD_USER_BTN))
+        self.click(btn)
+        self.wait_for_page_load()
+        WebDriverWait(self.driver, 15).until(
+            EC.visibility_of_element_located(self.FIRST_NAME_INPUT)
+        )
+        self.wait_for_ajax_idle()
+
+    def select_first_available_role(self) -> str:
+        select_el = self.wait.until(EC.presence_of_element_located(self.ROLE_SELECT))
+        options = [
+            (opt.get_attribute("value") or "", opt.text.strip())
+            for opt in select_el.find_elements(By.TAG_NAME, "option")
+        ]
+        target = next(
+            (
+                (val, label)
+                for val, label in options
+                if val.strip() and "nothing selected" not in label.casefold()
+            ),
+            None,
+        )
+        if not target:
+            raise LookupError("No selectable roles found in #role_select.")
+        target_val, target_label = target
+
+        # Try clicking via Bootstrap selectpicker toggle first
+        toggle_btns = self.driver.find_elements(By.CSS_SELECTOR, "button[data-id='role_select']")
+        if not toggle_btns:
+            toggle_btns = select_el.find_elements(
+                By.XPATH,
+                "./ancestor::div[contains(@class,'bootstrap-select')][1]//button[contains(@class,'dropdown-toggle')]",
+            )
+        if toggle_btns and toggle_btns[0].is_displayed():
+            self.click(toggle_btns[0])
+            time.sleep(0.3)
+            menu_items = [
+                el
+                for el in self.driver.find_elements(
+                    By.CSS_SELECTOR,
+                    ".bootstrap-select.open .dropdown-menu li a, .dropdown-menu.open li a, .dropdown-menu.show li a",
+                )
+                if el.is_displayed() and target_label.casefold() in el.text.strip().casefold()
+            ]
+            if menu_items:
+                self.click(menu_items[0])
+                time.sleep(0.3)
+
+        current_val = (select_el.get_attribute("value") or "").strip()
+        if current_val != target_val:
+            self.driver.execute_script(
+                "var el = arguments[0], val = arguments[1];"
+                "if (window.jQuery && window.jQuery(el).selectpicker) {"
+                "  window.jQuery(el).selectpicker('val', val).trigger('change');"
+                "} else {"
+                "  el.value = val;"
+                "  el.dispatchEvent(new Event('change', {bubbles: true}));"
+                "}",
+                select_el,
+                target_val,
+            )
+            time.sleep(0.3)
+
+        final_val = (select_el.get_attribute("value") or "").strip()
+        if not final_val:
+            raise AssertionError(f"Failed to select role '{target_label}' in #role_select.")
+        return target_label
+
+    def fill_and_submit_user_request(
+        self,
+        *,
+        first_name: str,
+        last_name: str,
+        username: str,
+        email: str,
+        password: str,
+        comment: str = "",
+    ) -> tuple[str, str]:
+        self.set_value(self.wait.until(EC.visibility_of_element_located(self.FIRST_NAME_INPUT)), first_name)
+        self.set_value(self.wait.until(EC.visibility_of_element_located(self.LAST_NAME_INPUT)), last_name)
+        self.set_value(self.wait.until(EC.visibility_of_element_located(self.USERNAME_INPUT)), username)
+        self.set_value(self.wait.until(EC.visibility_of_element_located(self.EMAIL_INPUT)), email)
+        selected_role = self.select_first_available_role()
+        self.set_value(self.wait.until(EC.visibility_of_element_located(self.PASSWORD_INPUT)), password)
+        self.set_value(self.wait.until(EC.visibility_of_element_located(self.CONFIRM_PASSWORD_INPUT)), password)
+        if comment:
+            self.set_value(self.wait.until(EC.visibility_of_element_located(self.COMMENT_INPUT)), comment)
+
+        submit_btn = self.wait.until(EC.element_to_be_clickable(self.ADD_USER_SUBMIT_BTN))
+        self.click(submit_btn)
+
+        confirm_msg = ""
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            for el in self.visible_elements(*self.TOAST_OR_ALERT):
+                try:
+                    text = el.text.strip()
+                except Exception:
+                    continue
+                if text:
+                    confirm_msg = text
+                    break
+
+            for ok_btn in self.visible_elements(By.CSS_SELECTOR, ".swal2-confirm, .sweet-alert button.confirm"):
+                try:
+                    self.click(ok_btn)
+                    time.sleep(0.3)
+                except Exception:
+                    pass
+
+            if confirm_msg and "add_user" not in self.driver.current_url.casefold():
+                break
+            time.sleep(0.2)
+
+        if not confirm_msg and "add_user" in self.driver.current_url.casefold():
+            errors = [
+                el.text.strip()
+                for el in self.visible_elements(
+                    By.CSS_SELECTOR,
+                    ".alert-danger, .toast-error, .text-danger, .help-block, .errorlist, .invalid-feedback",
+                )
+                if el.text.strip()
+            ]
+            raise AssertionError(
+                f"User approval request submission did not produce a confirmation message. "
+                f"Errors: {errors or ['none']} (URL: {self.driver.current_url})."
+            )
+
+        self.wait_for_page_load()
+        self.wait_for_ajax_idle()
+        return confirm_msg, selected_role
+
+    def find_row_containing(self, needle: str, timeout: int = 12) -> str:
+        wanted = needle.casefold()
+        for row in self.visible_rows(timeout=timeout):
+            try:
+                text = row.text.strip()
+            except Exception:
+                continue
+            if wanted in text.casefold():
+                return text
+        return ""
