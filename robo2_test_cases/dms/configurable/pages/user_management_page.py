@@ -40,7 +40,7 @@ class UserManagementPage(BasePage):
         By.CSS_SELECTOR,
         ".datatable-customize-download-btn a, a[title='Download']",
     )
-    FILTER_TOGGLE_BTN = (By.CSS_SELECTOR, "#filterToggle a, #filterToggle")
+    FILTER_TOGGLE_BTN = (By.CSS_SELECTOR, "#filterToggle a, #filterToggle, a[title='Filter']")
     FILTER_DRAWER = (By.CSS_SELECTOR, "#filterActionItems")
 
     # Action toolbar / modal controls
@@ -204,7 +204,7 @@ class UserManagementPage(BasePage):
         if not toggles:
             raise LookupError("Filter toggle button (#filterToggle) was not found.")
         drawer = self.driver.find_elements(*self.FILTER_DRAWER)
-        if drawer and "close" in (drawer[0].get_attribute("class") or ""):
+        if not drawer or "close" in (drawer[0].get_attribute("class") or ""):
             self.click(toggles[0])
             time.sleep(0.4)
 
