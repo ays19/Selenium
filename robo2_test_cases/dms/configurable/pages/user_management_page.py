@@ -245,6 +245,15 @@ class UserManagementPage(BasePage):
             time.sleep(0.5)
         raise TimeoutError(f"Expected '{action}' export file was not downloaded within {timeout}s.")
 
+    def _click_table_row(self, target_row) -> None:
+        checkboxes = target_row.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
+        if checkboxes:
+            self.click(checkboxes[0])
+        else:
+            cells = target_row.find_elements(By.TAG_NAME, "td")
+            self.click(cells[0] if cells else target_row)
+        time.sleep(0.4)
+
     def select_row_by_text(self, match_text: str = "") -> None:
         self.wait_for_ajax_idle()
         for attempt in range(3):
@@ -259,13 +268,49 @@ class UserManagementPage(BasePage):
                         raise LookupError(f"Row containing '{match_text}' was not found in the table.")
                     target_row = matched
 
-                checkboxes = target_row.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
-                if checkboxes:
-                    self.click(checkboxes[0])
-                else:
-                    cells = target_row.find_elements(By.TAG_NAME, "td")
-                    self.click(cells[0] if cells else target_row)
-                time.sleep(0.4)
+                self._click_table_row(target_row)
+                return
+            except StaleElementReferenceException:
+                if attempt == 2:
+                    raise
+                time.sleep(0.3)
+
+    def select_pending_update_request(
+        self,
+        base_url: str,
+        approval_route: str,
+        users_route: str = "/admin/user/list",
+    ) -> None:
+        """Select a Pending Update request row, creating one from Users list if none is visible."""
+        def _find_pending_update():
+            for attempt in range(3):
+                try:
+                    for row in self.visible_rows():
+                        text_cf = row.text.casefold()
+                        if "update" in text_cf and "pending" in text_cf:
+                            return row
+                    return None
+                except StaleElementReferenceException:
+                    if attempt == 2:
+                        raise
+                    time.sleep(0.3)
+            return None
+
+        self.wait_for_ajax_idle()
+        matched = _find_pending_update()
+        if matched is None:
+            self.open(base_url, users_route)
+            self.select_row_by_text("")
+            self.edit_selected_user_and_submit()
+            self.open(base_url, approval_route)
+            self.wait_for_ajax_idle()
+
+        for attempt in range(3):
+            try:
+                matched = _find_pending_update()
+                if matched is None:
+                    raise LookupError("No Pending Update request row was found in User Approval Requests.")
+                self._click_table_row(matched)
                 return
             except StaleElementReferenceException:
                 if attempt == 2:
@@ -581,14 +626,25 @@ class UserManagementPage(BasePage):
         *,
         comment: str = "",
         action_label: str = "Checker action",
+        verify_mandatory: bool = False,
     ) -> str:
-        """Open #userActionModal via trigger button, fill optional comment, confirm, and return message."""
-        trigger = WebDriverWait(self.driver, 10).until(EC.element_to_be_clickable(trigger_locator))
-        self.click(trigger)
+        """Open #userActionModal via trigger button (if not already open), fill comment, confirm, and return message."""
+        if not self.visible_elements(*self.USER_ACTION_MODAL):
+            trigger = WebDriverWait(self.driver, 10).until(EC.element_to_be_clickable(trigger_locator))
+            self.click(trigger)
         WebDriverWait(self.driver, 10).until(EC.visibility_of_element_located(self.USER_ACTION_MODAL))
         confirm_btn = WebDriverWait(self.driver, 10).until(
             EC.element_to_be_clickable(self.USER_ACTION_CONFIRM_BTN)
         )
+        if verify_mandatory:
+            comment_box = self.wait.until(EC.visibility_of_element_located(self.USER_ACTION_COMMENT))
+            comment_box.clear()
+            self.click(confirm_btn)
+            time.sleep(0.6)
+            if not self.visible_elements(*self.USER_ACTION_MODAL):
+                raise AssertionError(
+                    "Expected blank reject comment to be blocked by mandatory validation, but modal closed."
+                )
         if comment:
             comment_box = self.wait.until(EC.visibility_of_element_located(self.USER_ACTION_COMMENT))
             self.set_value(comment_box, comment)
@@ -641,10 +697,11 @@ class UserManagementPage(BasePage):
             action_label="Approve user request",
         )
 
-    def reject_selected_request(self, comment: str) -> str:
+    def reject_selected_request(self, comment: str, verify_mandatory: bool = False) -> str:
         """Reject the currently selected user approval request via #userActionModal."""
         return self._submit_checker_modal_action(
             self.REJECT_REQUEST_BTN,
             comment=comment,
             action_label="Reject user request",
+            verify_mandatory=verify_mandatory,
         )
