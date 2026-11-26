@@ -70,6 +70,9 @@ class UserManagementPage(BasePage):
     COMMENT_INPUT = (By.ID, "comment")
     ROLE_SELECT = (By.ID, "role_select")
     ADD_USER_SUBMIT_BTN = (By.ID, "add_user_submit_button")
+    POSITION_INPUT = (By.NAME, "position")
+    EDIT_USER_BTN = (By.ID, "edit_button")
+    EDIT_USER_SUBMIT_BTN = (By.ID, "edit_user_submit")
 
     def open(self, base_url: str, route: str) -> None:
         self.driver.get(f"{base_url.rstrip('/')}/{route.lstrip('/')}")
@@ -246,7 +249,8 @@ class UserManagementPage(BasePage):
         if checkboxes:
             self.click(checkboxes[0])
         else:
-            self.click(target_row)
+            cells = target_row.find_elements(By.TAG_NAME, "td")
+            self.click(cells[0] if cells else target_row)
         time.sleep(0.4)
 
     def visible_row_action_labels(self) -> list[str]:
@@ -414,13 +418,17 @@ class UserManagementPage(BasePage):
 
         submit_btn = self.wait.until(EC.element_to_be_clickable(self.ADD_USER_SUBMIT_BTN))
         self.click(submit_btn)
+        confirm_msg = self._wait_for_submission_confirmation("add_user", "User approval request submission")
+        return confirm_msg, selected_role
 
+    def _wait_for_submission_confirmation(self, form_url_fragment: str, action_label: str) -> str:
+        """Poll for a visible confirmation toast/modal after submitting a user management form."""
         confirm_msg = ""
         deadline = time.time() + 15
         while time.time() < deadline:
             for el in self.visible_elements(*self.TOAST_OR_ALERT):
                 try:
-                    text = el.text.strip()
+                    text = " ".join(el.text.split())
                 except Exception:
                     continue
                 if text:
@@ -434,11 +442,11 @@ class UserManagementPage(BasePage):
                 except Exception:
                     pass
 
-            if confirm_msg and "add_user" not in self.driver.current_url.casefold():
+            if confirm_msg and form_url_fragment not in self.driver.current_url.casefold():
                 break
             time.sleep(0.2)
 
-        if not confirm_msg and "add_user" in self.driver.current_url.casefold():
+        if not confirm_msg and form_url_fragment in self.driver.current_url.casefold():
             errors = [
                 el.text.strip()
                 for el in self.visible_elements(
@@ -448,13 +456,82 @@ class UserManagementPage(BasePage):
                 if el.text.strip()
             ]
             raise AssertionError(
-                f"User approval request submission did not produce a confirmation message. "
+                f"{action_label} did not produce a confirmation message. "
                 f"Errors: {errors or ['none']} (URL: {self.driver.current_url})."
             )
 
         self.wait_for_page_load()
         self.wait_for_ajax_idle()
-        return confirm_msg, selected_role
+        return confirm_msg
+
+    def _open_edit_form_from_selected_row(self) -> None:
+        edit_btn = WebDriverWait(self.driver, 10).until(
+            EC.element_to_be_clickable(self.EDIT_USER_BTN)
+        )
+        self.click(edit_btn)
+        self.wait_for_page_load()
+        WebDriverWait(self.driver, 15).until(
+            lambda d: "edit_user_request" in d.current_url.casefold()
+            and self.visible_elements(*self.FIRST_NAME_INPUT)
+        )
+        self.wait_for_ajax_idle()
+
+    def open_edit_user_request_form(self, match_text: str) -> None:
+        """Select a request row by text and open its Edit User Request form."""
+        self.dismiss_growl_notifications()
+        self.select_row_by_text(match_text)
+        self._open_edit_form_from_selected_row()
+
+    def edit_selected_user_and_submit(self) -> str:
+        """Open Edit User Request for the already-selected row, update fields, and submit."""
+        self._open_edit_form_from_selected_row()
+        ts = time.strftime("%m%d%H%M%S")
+        confirm_msg = self.update_and_submit_user_request(
+            position=f"QA Updated {ts}",
+            comment=f"Updated before approval ({ts})",
+        )
+        if not confirm_msg:
+            raise AssertionError("Expected a confirmation message after submitting user update request.")
+        return confirm_msg
+
+    def assert_activity_logged(self, base_url: str, route: str, expected_keywords: list[str]) -> str:
+        """Open the activity report and verify a visible row matches all expected keywords."""
+        self.open(base_url, route)
+        keywords = [k.strip().casefold() for k in expected_keywords if k and k.strip()]
+        rows = self.visible_rows(timeout=12)
+        for row in rows:
+            try:
+                text = row.text.strip()
+            except Exception:
+                continue
+            text_cf = text.casefold()
+            if all(kw in text_cf for kw in keywords):
+                return " ".join(text.split())[:140]
+
+        top_rows = [r.text.strip() for r in rows[:3]]
+        raise AssertionError(
+            f"Expected activity row matching {expected_keywords}, but none matched. "
+            f"Top visible rows: {top_rows}"
+        )
+
+    def update_and_submit_user_request(
+        self,
+        *,
+        last_name: str = "",
+        position: str = "",
+        comment: str = "",
+    ) -> str:
+        """Update editable fields on Edit User Request and submit."""
+        if last_name:
+            self.set_value(self.wait.until(EC.visibility_of_element_located(self.LAST_NAME_INPUT)), last_name)
+        if position:
+            self.set_value(self.wait.until(EC.visibility_of_element_located(self.POSITION_INPUT)), position)
+        if comment:
+            self.set_value(self.wait.until(EC.visibility_of_element_located(self.COMMENT_INPUT)), comment)
+
+        submit_btn = self.wait.until(EC.element_to_be_clickable(self.EDIT_USER_SUBMIT_BTN))
+        self.click(submit_btn)
+        return self._wait_for_submission_confirmation("edit_user_request", "User update request submission")
 
     def find_row_containing(self, needle: str, timeout: int = 12) -> str:
         wanted = needle.casefold()
