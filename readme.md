@@ -386,5 +386,5 @@ python build_exe.py
 ---
 
 ## 👤 Author & Maintainer
-- **Portfolio Repository**: [github.com/ays19/Selenium](https://github.com/ays19/Selenium)
+- **Portfolio Repository**: [github.com/ays19/Selenium](https://github.com/ays19/Selenium), [github.com/AtiqurRahman25](https://github.com/AtiqurRahman25)
 - **Primary Focus**: Enterprise QA Automation, Selenium WebDriver, Test Tooling & Desktop Architecture.
