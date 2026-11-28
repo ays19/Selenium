@@ -20,6 +20,7 @@ An end-to-end Python and Selenium 4 test automation suite for the **Robo2mation 
 - [Setup & Configuration](#setup--configuration)
 - [Running Tests, Viewing Reports, and Packaging](#running-tests-viewing-reports-and-packaging)
 - [Troubleshooting](#troubleshooting)
+- [Authors & Maintainers](#authors--maintainers)
 
 ---
 
@@ -320,3 +321,10 @@ The packaged application is written to `robo2_test_cases/dms/dist/Robo2mation_Ru
 - **Missing upload samples in `test_files/`** — Ensure `robo2_test_cases/dms/test_files/` contains sample files for every extension required by `tc002_document_attach.py`.
 - **`EXCEL_FILE` not found in `robo2_test_cases/login/`** — Paths in `.env` are resolved relative to the current working directory. When launching from `robo2_test_cases/login/`, set `EXCEL_FILE=../Robo2mation_26Q1_Sanity_Test_Case_Doc.xlsx` or use an absolute path.
 - **Running headless in background/batch runs** — Set `HEADLESS=true` in `robo2_test_cases/dms/.env` (or suite-specific `DMS_HEADLESS=true`, `REPORT_HEADLESS=true`, `CONFIGURABLE_HEADLESS=true`).
+
+---
+
+## Authors & Maintainers
+
+- **Repositories & Profiles**: [github.com/ays19/Selenium](https://github.com/ays19/Selenium), [github.com/AtiqurRahman25](https://github.com/AtiqurRahman25)
+- **Focus**: QA Automation, Selenium WebDriver, Test Reporting & Desktop Runner Tooling.
